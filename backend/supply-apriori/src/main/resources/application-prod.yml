@@ -1,0 +1,8 @@
+server:
+  port: 8087
+
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/barracks_monitor
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
