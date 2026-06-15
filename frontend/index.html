@@ -8,6 +8,10 @@
     <script src="BarrackMap.js"></script>
     <script src="NutritionLegend.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="MealTable.js"></script>
+    <script src="EpidemicCurve.js"></script>
+    <script src="InterventionCard.js"></script>
+    <script src="ShortageList.js"></script>
     <style>
         * {
             margin: 0;
@@ -909,321 +913,29 @@
             setInterval(refreshData, 60000);
         })();
 
-        let mealPlanChart = null, seirChart = null, interventionChart = null, supplyChart = null;
+        let mealTable, epidemicCurve, interventionCard, shortageList;
 
         function initAdvancedModules() {
-            loadMealPlans();
-            loadInterventionRecommendations();
-            loadSupplyAnalysis();
-            loadSeirBarracksOptions();
-        }
-
-        async function loadMealPlans() {
-            try {
-                const res = await fetch(`${MEAL_PLANNER_API}/v1/meal-plans?pageSize=1`);
-                const data = await res.json();
-                const summary = document.getElementById('mealPlanSummary');
-                if (data && data.length > 0) {
-                    const plan = data[0];
-                    summary.innerHTML = `
-                        <div><strong>计划名称:</strong> ${plan.planName || '本周食谱'}</div>
-                        <div><strong>周期:</strong> ${plan.startDate || '-'} ~ ${plan.endDate || '-'}</div>
-                        <div><strong>目标人数:</strong> ${plan.targetSoldierCount || 0}人</div>
-                        <div><strong>总成本:</strong> ¥${(plan.totalCost || 0).toFixed(2)}</div>
-                        <div><strong>求解状态:</strong> ${plan.solverStatus || '-'}</div>
-                    `;
-                    renderMealPlanChart(plan);
-                    renderMealPlanDetail(plan);
-                } else {
-                    summary.innerHTML = '<p>暂无食谱计划，点击右上角按钮生成</p>';
-                }
-            } catch (e) {
-                document.getElementById('mealPlanSummary').innerHTML = '<p style="color: #ef4444;">膳食服务连接失败 (8084未启动)</p>';
+            if (!mealTable) {
+                mealTable = new MealTable(API_BASE, MEAL_PLANNER_API, 'mealPlanChart', 'mealPlanSummary', 'mealPlanDetail');
+                mealTable.bindButton('generateMealPlanBtn');
             }
-        }
-
-        function renderMealPlanChart(plan) {
-            const ctx = document.getElementById('mealPlanChart').getContext('2d');
-            if (mealPlanChart) mealPlanChart.destroy();
-            mealPlanChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: ['蛋白质(g)', '脂肪(g)', '维C(mg)', '热量(kcal)'],
-                    datasets: [
-                        {
-                            label: '实际达成',
-                            data: [
-                                plan.dailyProteinG || 0,
-                                plan.dailyFatG || 0,
-                                plan.dailyVitaminCMg || 0,
-                                plan.dailyCalorieKcal || 0
-                            ],
-                            backgroundColor: 'rgba(59, 130, 246, 0.7)'
-                        },
-                        {
-                            label: '目标下限',
-                            data: [80, 50, 100, 2500],
-                            backgroundColor: 'rgba(34, 197, 94, 0.5)'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } },
-                    scales: { y: { beginAtZero: true } }
-                }
-            });
-        }
-
-        function renderMealPlanDetail(plan) {
-            const el = document.getElementById('mealPlanDetail');
-            if (plan.items && plan.items.length > 0) {
-                const grouped = {};
-                plan.items.forEach(it => {
-                    const key = `第${it.dayOfWeek}天-${it.mealType}`;
-                    if (!grouped[key]) grouped[key] = [];
-                    grouped[key].push(`${it.foodName} ${it.quantityGrams || 0}g`);
-                });
-                el.innerHTML = Object.entries(grouped).map(([k, v]) =>
-                    `<div style="margin: 4px 0;"><strong>${k}:</strong> ${v.join('、')}</div>`
-                ).join('');
+            if (!epidemicCurve) {
+                epidemicCurve = new EpidemicCurve(API_BASE, SEIR_SIMULATOR_API, 'seirChart', 'seirSummary', 'seirComparison', 'seirBarracksId', 'seirInitialInfected');
+                epidemicCurve.bindButton('runSeirBtn');
             }
-        }
-
-        document.addEventListener('click', async function(e) {
-            if (e.target.id === 'generateMealPlanBtn') {
-                e.target.disabled = true;
-                e.target.textContent = '生成中...';
-                try {
-                    const barracksRes = await fetch(`${API_BASE}/v1/barracks`);
-                    const barracks = await barracksRes.json();
-                    const barracksId = barracks.length > 0 ? barracks[0].id : 1;
-                    await fetch(`${MEAL_PLANNER_API}/v1/meal-plans/generate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ barracksId, startDate: new Date().toISOString().slice(0,10), soldierCount: 40 })
-                    });
-                    setTimeout(loadMealPlans, 500);
-                } finally {
-                    e.target.disabled = false;
-                    e.target.textContent = '生成本周食谱';
-                }
+            if (!interventionCard) {
+                interventionCard = new InterventionCard(INTERVENTION_API, 'interventionChart', 'interventionSummary', 'interventionList');
+                interventionCard.bindButton('runInterventionBtn');
             }
-            
-            if (e.target.id === 'runSeirBtn') {
-                e.target.disabled = true;
-                e.target.textContent = '模拟中...';
-                try {
-                    const barracksId = document.getElementById('seirBarracksId').value;
-                    const initInfected = parseInt(document.getElementById('seirInitialInfected').value) || 2;
-                    const res = await fetch(`${SEIR_SIMULATOR_API}/v1/seir-simulations/run`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ barracksId: parseInt(barracksId), initialInfected: initInfected, simulationDays: 60, quarantineStartDay: 10, isolationEffectiveness: 0.6 })
-                    });
-                    const sim = await res.json();
-                    await renderSeirResult(sim);
-                } finally {
-                    e.target.disabled = false;
-                    e.target.textContent = '运行模拟';
-                }
+            if (!shortageList) {
+                shortageList = new ShortageList(SUPPLY_API, 'supplyChart', 'supplySummary', 'associationRules');
+                shortageList.bindButton('runAprioriBtn');
             }
-            
-            if (e.target.id === 'runInterventionBtn') {
-                e.target.disabled = true;
-                e.target.textContent = '生成中...';
-                try {
-                    await fetch(`${INTERVENTION_API}/v1/intervention-recommendations/generate-all`, { method: 'POST' });
-                    setTimeout(loadInterventionRecommendations, 500);
-                } finally {
-                    e.target.disabled = false;
-                    e.target.textContent = '批量生成推荐';
-                }
-            }
-            
-            if (e.target.id === 'runAprioriBtn') {
-                e.target.disabled = true;
-                e.target.textContent = '分析中...';
-                try {
-                    await fetch(`${SUPPLY_API}/v1/supply-analysis/run`, { method: 'POST' });
-                    setTimeout(loadSupplyAnalysis, 500);
-                } finally {
-                    e.target.disabled = false;
-                    e.target.textContent = '分析最近30天';
-                }
-            }
-        });
-
-        async function loadSeirBarracksOptions() {
-            try {
-                const res = await fetch(`${API_BASE}/v1/barracks`);
-                const data = await res.json();
-                const select = document.getElementById('seirBarracksId');
-                if (select) {
-                    select.innerHTML = data.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
-                }
-            } catch (e) {}
-        }
-
-        async function renderSeirResult(sim) {
-            const summary = document.getElementById('seirSummary');
-            const labels = [];
-            const sData = [], eData = [], iData = [], rData = [], qData = [];
-            
-            if (sim && sim.timePoints) {
-                sim.timePoints.forEach(tp => {
-                    labels.push('D' + tp.day);
-                    sData.push(tp.susceptibleCount || 0);
-                    eData.push(tp.exposedCount || 0);
-                    iData.push(tp.infectedCount || 0);
-                    rData.push(tp.recoveredCount || 0);
-                    qData.push(tp.quarantinedCount || 0);
-                });
-                summary.innerHTML = `
-                    <div><strong>R₀基本再生数:</strong> ${(sim.transmissionRateBeta / sim.recoveryRateGamma).toFixed(2)}</div>
-                    <div><strong>峰值日:</strong> 第${sim.peakDay || '-'}天</div>
-                    <div><strong>峰值感染:</strong> ${sim.maxInfectedCount || 0}人</div>
-                    <div><strong>总感染人数:</strong> ${sim.totalInfectedCount || 0}人</div>
-                `;
-            }
-            
-            const ctx = document.getElementById('seirChart').getContext('2d');
-            if (seirChart) seirChart.destroy();
-            seirChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels,
-                    datasets: [
-                        { label: '易感(S)', data: sData, borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', fill: true, tension: 0.3 },
-                        { label: '潜伏(E)', data: eData, borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.1)', fill: true, tension: 0.3 },
-                        { label: '感染(I)', data: iData, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.3 },
-                        { label: '恢复(R)', data: rData, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', fill: true, tension: 0.3 },
-                        { label: '隔离(Q)', data: qData, borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.1)', fill: true, tension: 0.3, borderDash: [5,5] }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 10 } } },
-                    scales: { y: { beginAtZero: true } }
-                }
-            });
-        }
-
-        async function loadInterventionRecommendations() {
-            try {
-                const res = await fetch(`${INTERVENTION_API}/v1/intervention-recommendations?pageSize=50`);
-                const data = await res.json();
-                const summary = document.getElementById('interventionSummary');
-                const recs = Array.isArray(data) ? data : (data.content || data.items || []);
-                
-                const pending = recs.filter(r => r.status === 'PENDING' || !r.status).length;
-                const totalCost = recs.reduce((s, r) => s + (r.estimatedCostTotal || 0), 0);
-                
-                const riskCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-                recs.forEach(r => { if (r.riskLevel) riskCounts[r.riskLevel] = (riskCounts[r.riskLevel] || 0) + 1; });
-                
-                summary.innerHTML = `
-                    <div><strong>推荐总数:</strong> ${recs.length}条</div>
-                    <div><strong>待执行:</strong> ${pending}条</div>
-                    <div><strong>预计总费用:</strong> ¥${totalCost.toFixed(2)}</div>
-                `;
-                
-                const ctx = document.getElementById('interventionChart').getContext('2d');
-                if (interventionChart) interventionChart.destroy();
-                interventionChart = new Chart(ctx, {
-                    type: 'doughnut',
-                    data: {
-                        labels: Object.keys(riskCounts),
-                        datasets: [{
-                            data: Object.values(riskCounts),
-                            backgroundColor: ['#dc2626', '#ea580c', '#ca8a04', '#16a34a']
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { position: 'right', labels: { font: { size: 10 }, boxWidth: 10 } } }
-                    }
-                });
-                
-                const list = document.getElementById('interventionList');
-                const highRisk = recs.filter(r => ['CRITICAL', 'HIGH'].includes(r.riskLevel)).slice(0, 10);
-                list.innerHTML = highRisk.map(r => `
-                    <div style="padding: 6px; border-bottom: 1px solid #e5e7eb;">
-                        <div><strong>${r.soldierName || '士兵#'+r.soldierId}</strong>
-                            <span style="float:right; padding: 1px 6px; border-radius: 3px; font-size: 11px;
-                                background: ${r.riskLevel==='CRITICAL'?'#fee2e2':r.riskLevel==='HIGH'?'#ffedd5':'#fef9c3'};
-                                color: ${r.riskLevel==='CRITICAL'?'#dc2626':r.riskLevel==='HIGH'?'#ea580c':'#854d0e'};">
-                                ${r.riskLevel || '-'}
-                            </span>
-                        </div>
-                        <div style="color: #6b7280;">💊 ${r.recommendedSupplements || '-'}</div>
-                        <div style="color: #6b7280;">💰 ¥${(r.estimatedCostTotal||0).toFixed(2)} / ${r.durationDays||14}天</div>
-                    </div>
-                `).join('');
-                
-            } catch (e) {
-                document.getElementById('interventionSummary').innerHTML = '<p style="color: #ef4444;">干预服务连接失败 (8086未启动)</p>';
-            }
-        }
-
-        async function loadSupplyAnalysis() {
-            try {
-                const [rulesRes, topRes] = await Promise.all([
-                    fetch(`${SUPPLY_API}/v1/association-rules/significant`),
-                    fetch(`${SUPPLY_API}/v1/supply-analysis/top-deficits`)
-                ]);
-                const rules = await rulesRes.json();
-                const topDeficits = await topRes.json();
-                
-                const summary = document.getElementById('supplySummary');
-                const sigRules = Array.isArray(rules) ? rules.filter(r => r.isSignificant !== false) : [];
-                summary.innerHTML = `
-                    <div><strong>显著关联规则:</strong> ${sigRules.length}条</div>
-                    <div><strong>分析周期:</strong> 最近30天</div>
-                    <div><strong>最小Lift阈值:</strong> 1.5</div>
-                `;
-                
-                const ctx = document.getElementById('supplyChart').getContext('2d');
-                if (supplyChart) supplyChart.destroy();
-                const labels = (topDeficits || []).slice(0, 5).map(d => d.foodCategory || d.foodName || '');
-                const data = (topDeficits || []).slice(0, 5).map(d => (d.avgDeficitRate || d.deficitRate || 0) * 100);
-                supplyChart = new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: '平均短缺率 (%)',
-                            data,
-                            backgroundColor: ['#fee2e2', '#fecaca', '#fed7aa', '#fde68a', '#fef08a'].reverse()
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: { x: { beginAtZero: true, max: 100, ticks: { callback: v => v+'%' } } }
-                    }
-                });
-                
-                const rulesEl = document.getElementById('associationRules');
-                rulesEl.innerHTML = (sigRules.slice(0, 8)).map((r, i) => `
-                    <div style="padding: 6px; border-bottom: 1px solid #e5e7eb; background: ${i<3?'#fffbeb':'transparent'};">
-                        <div style="font-weight: 500;">${r.ruleDescription || r.antecedentItems + ' → ' + r.consequentItems}</div>
-                        <div style="color: #6b7280; font-size: 11px;">
-                            Support: ${((r.support||0)*100).toFixed(1)}% | 
-                            Confidence: ${((r.confidence||0)*100).toFixed(1)}% | 
-                            Lift: <strong style="color:#dc2626;">${(r.lift||0).toFixed(2)}</strong>
-                        </div>
-                    </div>
-                `).join('');
-                
-            } catch (e) {
-                document.getElementById('supplySummary').innerHTML = '<p style="color: #ef4444;">补给服务连接失败 (8087未启动)</p>';
-            }
+            mealTable.load();
+            epidemicCurve.loadBarracksOptions();
+            interventionCard.load();
+            shortageList.load();
         }
     </script>
 </body>

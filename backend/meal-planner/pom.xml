@@ -10,7 +10,7 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>barracks-meal-planner</artifactId>
+    <artifactId>barracks-meal_planner</artifactId>
     <packaging>jar</packaging>
     <name>Barracks Meal Planner</name>
     <description>膳食方案优化模块 - 混合整数规划生成一周食谱</description>

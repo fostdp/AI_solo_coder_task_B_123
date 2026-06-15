@@ -41,6 +41,12 @@ seir:
   default-sigma: 0.6667
   default-gamma: 0.2
   default-quarantine-effectiveness: 0.6
+  thread-pool:
+    core-size: 2
+    max-size: 8
+    queue-capacity: 20
+  parallel:
+    enabled: true
 
 scheduling:
   enabled: false

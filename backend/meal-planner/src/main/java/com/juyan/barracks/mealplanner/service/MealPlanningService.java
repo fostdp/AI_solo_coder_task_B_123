@@ -12,6 +12,8 @@ import com.juyan.barracks.common.repository.MealPlanRepository;
 import com.juyan.barracks.common.repository.PhysicalActivityRepository;
 import com.juyan.barracks.common.repository.SoldierRepository;
 import com.juyan.barracks.mealplanner.algorithm.MipMealPlanner;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,6 +28,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Slf4j
 @Service
@@ -37,6 +41,8 @@ public class MealPlanningService {
     private final BarracksRepository barracksRepository;
     private final SoldierRepository soldierRepository;
     private final PhysicalActivityRepository physicalActivityRepository;
+    private final Executor mipSolverExecutor;
+    private final MeterRegistry meterRegistry;
 
     @Value("${meal-planner.target-protein:80}")
     private double targetProtein;
@@ -109,7 +115,9 @@ public class MealPlanningService {
                 adjustedCalorieMin, adjustedCalorieMax
         );
 
-        MipMealPlanner.MealPlanResult planResult = planner.solve();
+        MipMealPlanner.MealPlanResult planResult = Timer.builder("mip.solver.time")
+                .register(meterRegistry)
+                .record(() -> CompletableFuture.supplyAsync(planner::solve, mipSolverExecutor).join());
         LocalDate endDate = startDate.plusDays(6);
 
         MealPlan mealPlan = new MealPlan();

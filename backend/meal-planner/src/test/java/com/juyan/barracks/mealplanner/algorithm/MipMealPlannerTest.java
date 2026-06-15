@@ -328,4 +328,57 @@ class MipMealPlannerTest {
                     "每日热量(" + nut.getCalorie() + "kcal)应接近目标(松弛后)");
         }
     }
+
+    @Test
+    void testRelaxedConstraints() {
+        List<FoodItem> extremeItems = new ArrayList<>();
+        FoodItem chicken = new FoodItem();
+        chicken.setId(1L);
+        chicken.setName("鸡肉");
+        chicken.setProteinPer100g(BigDecimal.valueOf(25.0));
+        chicken.setFatPer100g(BigDecimal.valueOf(5.0));
+        chicken.setVitaminCPer100gMg(BigDecimal.valueOf(0.5));
+        chicken.setCaloriePer100gKcal(BigDecimal.valueOf(165.0));
+        chicken.setCostPerKg(BigDecimal.valueOf(30.0));
+        chicken.setIsAvailable(true);
+        extremeItems.add(chicken);
+
+        FoodItem rice = new FoodItem();
+        rice.setId(2L);
+        rice.setName("米饭");
+        rice.setProteinPer100g(BigDecimal.valueOf(2.7));
+        rice.setFatPer100g(BigDecimal.valueOf(0.3));
+        rice.setVitaminCPer100gMg(BigDecimal.valueOf(0.0));
+        rice.setCaloriePer100gKcal(BigDecimal.valueOf(130.0));
+        rice.setCostPerKg(BigDecimal.valueOf(5.0));
+        rice.setIsAvailable(true);
+        extremeItems.add(rice);
+
+        MipMealPlanner extremePlanner = new MipMealPlanner(
+                extremeItems, 1,
+                500.0, 300.0, 500.0,
+                5000.0, 8000.0
+        );
+
+        MipMealPlanner.MealPlanResult result = extremePlanner.solve();
+
+        assertNotNull(result, "Relaxed constraints should still produce a result");
+        assertNotNull(result.getMealItems(), "Meal items should not be null");
+        assertNotEquals("INFEASIBLE", result.getSolverStatus(),
+                "With slack variables, solver should not report INFEASIBLE");
+
+        double totalProtein = result.getMealItems().stream()
+                .mapToDouble(item -> item.getProteinG().doubleValue()).sum();
+        assertTrue(totalProtein > 0, "Should have some protein even with extreme targets");
+
+        MipMealPlanner normalPlanner = new MipMealPlanner(
+                extremeItems, 1,
+                80.0, 50.0, 100.0,
+                2500.0, 3500.0
+        );
+        MipMealPlanner.MealPlanResult normalResult = normalPlanner.solve();
+        assertNotNull(normalResult, "Normal constraints should produce a result");
+        assertTrue(normalResult.getTotalCost().compareTo(result.getTotalCost()) <= 0,
+                "Normal plan should cost no more than extreme relaxed plan");
+    }
 }

@@ -14,7 +14,10 @@ import com.juyan.barracks.intervention.algorithm.SupplementCatalog;
 import com.juyan.barracks.intervention.config.InterventionConfig;
 import com.juyan.barracks.intervention.dto.RecommendationResultDTO;
 import com.juyan.barracks.intervention.dto.TreeTrainResultDTO;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.Resource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -25,6 +28,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -37,6 +42,10 @@ public class NutritionInterventionService {
     private final InterventionRecommendationRepository recommendationRepository;
     private final InterventionConfig config;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
+
+    @Resource(name = "interventionExecutor")
+    private Executor interventionExecutor;
 
     private NutritionInterventionTree decisionTree;
 
@@ -204,7 +213,9 @@ public class NutritionInterventionService {
         Map<Long, NutritionRisk> riskMap = currentRisks.stream()
                 .collect(Collectors.toMap(NutritionRisk::getSoldierId, r -> r));
 
-        List<RecommendationResultDTO> results = new ArrayList<>();
+        Timer.Sample timerSample = Timer.start(meterRegistry);
+
+        List<CompletableFuture<RecommendationResultDTO>> futures = new ArrayList<>();
         int skipped = 0;
 
         for (Soldier soldier : soldiers) {
@@ -218,18 +229,30 @@ public class NutritionInterventionService {
                 continue;
             }
 
-            try {
-                NutritionInterventionTree.SoldierFeatures features = buildSoldierFeatures(soldier, risk);
-                List<NutritionInterventionTree.Intervention> interventions =
-                        decisionTree.predict(features, config.getDefaultDurationDays());
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                try {
+                    NutritionInterventionTree.SoldierFeatures features = buildSoldierFeatures(soldier, risk);
+                    List<NutritionInterventionTree.Intervention> interventions =
+                            decisionTree.predict(features, config.getDefaultDurationDays());
 
-                RecommendationResultDTO result = buildResultDTO(soldier, risk, features, interventions);
-                saveRecommendation(soldier, risk, result);
-                results.add(result);
-            } catch (Exception e) {
-                log.warn("为士兵 {} 生成推荐失败: {}", soldier.getId(), e.getMessage());
-            }
+                    RecommendationResultDTO result = buildResultDTO(soldier, risk, features, interventions);
+                    saveRecommendation(soldier, risk, result);
+                    return result;
+                } catch (Exception e) {
+                    log.warn("为士兵 {} 生成推荐失败: {}", soldier.getId(), e.getMessage());
+                    return null;
+                }
+            }, interventionExecutor));
         }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        List<RecommendationResultDTO> results = futures.stream()
+                .map(CompletableFuture::join)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        timerSample.stop(meterRegistry.timer("intervention.generation.time"));
 
         log.info("批量推荐完成: 处理士兵={}, 生成推荐={}, 跳过无数据={}", soldiers.size(), results.size(), skipped);
         return results;

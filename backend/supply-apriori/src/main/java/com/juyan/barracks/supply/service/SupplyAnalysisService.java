@@ -11,7 +11,10 @@ import com.juyan.barracks.common.repository.SupplyDeficitRecordRepository;
 import com.juyan.barracks.supply.algorithm.AprioriSupplyAnalyzer;
 import com.juyan.barracks.supply.algorithm.AssociationRuleResult;
 import com.juyan.barracks.supply.dto.*;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.Resource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,6 +27,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
@@ -36,6 +41,10 @@ public class SupplyAnalysisService {
     private final AssociationRuleRepository associationRuleRepository;
     private final BarracksRepository barracksRepository;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
+
+    @Resource(name = "aprioriAnalysisExecutor")
+    private Executor aprioriAnalysisExecutor;
 
     @Value("${apriori.min-support:0.10}")
     private double minSupport;
@@ -91,6 +100,8 @@ public class SupplyAnalysisService {
     public AnalysisResultDTO analyzeSupplyDeficits(LocalDate startDate, LocalDate endDate) {
         log.info("开始分析补给短缺: {} ~ {}", startDate, endDate);
 
+        Timer.Sample timerSample = Timer.start(meterRegistry);
+
         List<SupplyDeficitRecord> records = deficitRecordRepository.findByDateRange(startDate, endDate);
         log.info("从数据库读取到 {} 条短缺记录", records.size());
 
@@ -107,6 +118,7 @@ public class SupplyAnalysisService {
         log.info("构建事务完成，共 {} 个事务", transactions.size());
 
         if (transactions.isEmpty()) {
+            timerSample.stop(meterRegistry.timer("apriori.analysis.time"));
             return AnalysisResultDTO.builder()
                     .analyzedAt(LocalDateTime.now())
                     .totalTransactions(0)
@@ -116,10 +128,12 @@ public class SupplyAnalysisService {
                     .build();
         }
 
-        List<AssociationRuleResult.ItemSet> frequentItemSets = analyzer.findFrequentItemSets(transactions, minSupport);
+        List<AssociationRuleResult.ItemSet> frequentItemSets = CompletableFuture.supplyAsync(
+                () -> analyzer.findFrequentItemSets(transactions, minSupport), aprioriAnalysisExecutor).join();
         log.info("挖掘频繁项集完成，共 {} 个", frequentItemSets.size());
 
-        List<AssociationRuleResult> rules = analyzer.generateAssociationRules(frequentItemSets, transactions, minConfidence);
+        List<AssociationRuleResult> rules = CompletableFuture.supplyAsync(
+                () -> analyzer.generateAssociationRules(frequentItemSets, transactions, minConfidence), aprioriAnalysisExecutor).join();
         log.info("生成关联规则完成，共 {} 条", rules.size());
 
         List<AssociationRuleResult> significantRules = rules.stream()
@@ -131,6 +145,8 @@ public class SupplyAnalysisService {
 
         List<TopDeficitItem> topDeficitItems = computeTopDeficitItems(records, 5);
         List<String> suggestions = generateImprovementSuggestions(significantRules, topDeficitItems);
+
+        timerSample.stop(meterRegistry.timer("apriori.analysis.time"));
 
         return AnalysisResultDTO.builder()
                 .analyzedAt(LocalDateTime.now())

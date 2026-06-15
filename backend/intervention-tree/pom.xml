@@ -10,7 +10,7 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>barracks-intervention-tree</artifactId>
+    <artifactId>barracks-intervention_dt</artifactId>
     <packaging>jar</packaging>
     <name>Barracks Intervention Tree</name>
     <description>个体营养干预推荐 - 决策树规则引擎</description>

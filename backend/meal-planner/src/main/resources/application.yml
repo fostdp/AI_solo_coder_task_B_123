@@ -43,6 +43,10 @@ meal-planner:
   calorie-min: 2500
   calorie-max: 3500
   training-boost: 0.2
+  thread-pool:
+    core-size: 2
+    max-size: 4
+    queue-capacity: 10
 
 scheduling:
   meal-planning:

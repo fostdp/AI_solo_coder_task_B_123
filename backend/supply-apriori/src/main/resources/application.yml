@@ -41,6 +41,10 @@ apriori:
   min-confidence: 0.60
   min-lift: 1.5
   analysis-window-days: 30
+  thread-pool:
+    core-size: 2
+    max-size: 4
+    queue-capacity: 20
 
 scheduling:
   supply-analysis:

@@ -8,15 +8,17 @@ import com.juyan.barracks.common.repository.ContactEdgeRepository;
 import com.juyan.barracks.common.repository.SeirSimulationRepository;
 import com.juyan.barracks.common.repository.SoldierRepository;
 import com.juyan.barracks.seir.algorithm.SeirModel;
+import com.juyan.barracks.seir.algorithm.SeirParallelExecutor;
 import com.juyan.barracks.seir.algorithm.SeirResult;
-import jakarta.annotation.PostConstruct;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,15 +29,18 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class SeirSimulationService {
 
     private final SoldierRepository soldierRepository;
     private final ContactEdgeRepository contactEdgeRepository;
     private final SeirSimulationRepository seirSimulationRepository;
+    private final SeirParallelExecutor seirParallelExecutor;
+    private final MeterRegistry meterRegistry;
+    private final ThreadPoolTaskExecutor seirSimulationExecutor;
 
     @Value("${seir.default-beta:0.35}")
     private double defaultBeta;
@@ -49,13 +54,21 @@ public class SeirSimulationService {
     @Value("${seir.default-quarantine-effectiveness:0.6}")
     private double defaultQuarantineEffectiveness;
 
-    private SeirModel seirModel;
+    @Value("${seir.parallel.enabled:true}")
+    private boolean parallelEnabled;
 
-    @PostConstruct
-    public void init() {
-        seirModel = new SeirModel(defaultBeta, defaultSigma, defaultGamma);
-        log.info("SEIR模型初始化完成: β={}, σ={}, γ={}, 默认隔离有效率={}",
-                defaultBeta, defaultSigma, defaultGamma, defaultQuarantineEffectiveness);
+    public SeirSimulationService(SoldierRepository soldierRepository,
+                                 ContactEdgeRepository contactEdgeRepository,
+                                 SeirSimulationRepository seirSimulationRepository,
+                                 SeirParallelExecutor seirParallelExecutor,
+                                 MeterRegistry meterRegistry,
+                                 @Qualifier("seirSimulationExecutor") ThreadPoolTaskExecutor seirSimulationExecutor) {
+        this.soldierRepository = soldierRepository;
+        this.contactEdgeRepository = contactEdgeRepository;
+        this.seirSimulationRepository = seirSimulationRepository;
+        this.seirParallelExecutor = seirParallelExecutor;
+        this.meterRegistry = meterRegistry;
+        this.seirSimulationExecutor = seirSimulationExecutor;
     }
 
     @Data
@@ -87,6 +100,10 @@ public class SeirSimulationService {
 
     @Transactional
     public SimulationComparison runSimulation(SimulationRequest request) {
+        return meterRegistry.timer("seir.simulation.time").record(() -> runSimulationInternal(request));
+    }
+
+    private SimulationComparison runSimulationInternal(SimulationRequest request) {
         if (request.getBarracksId() == null) {
             throw new IllegalArgumentException("barracksId不能为空");
         }
@@ -126,11 +143,8 @@ public class SeirSimulationService {
                 .gamma(gammaParam != null ? gammaParam : defaultGamma)
                 .build();
 
-        log.info("开始SEIR模拟: 兵营={}, 人口={}, 初始感染={}, 模拟天数={}",
-                request.getBarracksId(), population, initialInfected, days);
-
-        SeirResult noQuarantineResult = seirModel.simulate(
-                population, initialInfected, days, params, contactEdges, null);
+        log.info("开始SEIR模拟: 兵营={}, 人口={}, 初始感染={}, 模拟天数={}, 并行={}",
+                request.getBarracksId(), population, initialInfected, days, parallelEnabled);
 
         SeirModel.QuarantineConfig quarantineConfig = SeirModel.QuarantineConfig.builder()
                 .quarantineStartDay(quarantineStartDay)
@@ -138,8 +152,28 @@ public class SeirSimulationService {
                 .quarantineRate(0.6)
                 .build();
 
-        SeirResult withQuarantineResult = seirModel.simulate(
-                population, initialInfected, days, params, contactEdges, quarantineConfig);
+        SeirResult noQuarantineResult;
+        SeirResult withQuarantineResult;
+
+        if (parallelEnabled) {
+            CompletableFuture<SeirResult> noQuarantineFuture = CompletableFuture.supplyAsync(() ->
+                    seirParallelExecutor.simulateSingleWithParallelODE(
+                            population, initialInfected, days, params, contactEdges, null),
+                    seirSimulationExecutor);
+
+            CompletableFuture<SeirResult> withQuarantineFuture = CompletableFuture.supplyAsync(() ->
+                    seirParallelExecutor.simulateSingleWithParallelODE(
+                            population, initialInfected, days, params, contactEdges, quarantineConfig),
+                    seirSimulationExecutor);
+
+            noQuarantineResult = noQuarantineFuture.join();
+            withQuarantineResult = withQuarantineFuture.join();
+        } else {
+            noQuarantineResult = seirParallelExecutor.simulateSingleWithParallelODE(
+                    population, initialInfected, days, params, contactEdges, null);
+            withQuarantineResult = seirParallelExecutor.simulateSingleWithParallelODE(
+                    population, initialInfected, days, params, contactEdges, quarantineConfig);
+        }
 
         SeirSimulation noQuarantineSim = saveSimulation(
                 request, noQuarantineResult, population, initialInfected, days,

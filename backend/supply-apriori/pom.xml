@@ -10,7 +10,7 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>barracks-supply-apriori</artifactId>
+    <artifactId>barracks-supply_apriori</artifactId>
     <packaging>jar</packaging>
     <name>Barracks Supply Apriori</name>
     <description>后勤补给漏洞分析 - Apriori关联规则挖掘</description>

@@ -45,6 +45,10 @@ intervention:
   cross-validation-folds: 5
   min-history-samples-for-training: 50
   enable-builtin-rules-fallback: true
+  thread-pool:
+    core-size: 2
+    max-size: 4
+    queue-capacity: 50
 
 logging:
   level:
