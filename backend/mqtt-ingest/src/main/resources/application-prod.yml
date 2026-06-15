@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/barracks_monitor}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+  mqtt:
+    broker-url: ${MQTT_BROKER:tcp://localhost:1883}
+    username: ${MQTT_USERNAME:admin}
+    password: ${MQTT_PASSWORD:admin}
+
+logging:
+  file:
+    path: ${LOG_PATH:/var/log/barracks/}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoint:
+    prometheus:
+      enabled: true
