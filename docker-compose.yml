@@ -1,0 +1,294 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-postgis16
+    container_name: barracks-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: barracks
+      POSTGRES_USER: barracks
+      POSTGRES_PASSWORD: barracks_secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./db/spatial_index.sql:/docker-entrypoint-initdb.d/02-index.sql
+      - ./database/init_postgis.sql:/docker-entrypoint-initdb.d/03-postgis.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U barracks -d barracks"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - barracks-net
+
+  emqx:
+    image: emqx/emqx:5.5
+    container_name: barracks-emqx
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "18083:18083"
+    environment:
+      EMQX_NAME: barracks_emqx
+      EMQX_LOADED_MODULES: "emqx_mod_acl_internal,emqx_mod_presence"
+    healthcheck:
+      test: ["CMD", "emqx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - barracks-net
+
+  mqtt-ingest:
+    build:
+      context: backend
+      dockerfile: mqtt-ingest/Dockerfile
+    container_name: barracks-mqtt-ingest
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/barracks
+      DB_USERNAME: barracks
+      DB_PASSWORD: barracks_secret
+      MQTT_BROKER: tcp://emqx:1883
+    networks:
+      - barracks-net
+
+  nutrition-rf:
+    build:
+      context: backend
+      dockerfile: nutrition-rf/Dockerfile
+    container_name: barracks-nutrition-rf
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mqtt-ingest:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/barracks
+      DB_USERNAME: barracks
+      DB_PASSWORD: barracks_secret
+    networks:
+      - barracks-net
+
+  outbreak-satscan:
+    build:
+      context: backend
+      dockerfile: outbreak-satscan/Dockerfile
+    container_name: barracks-outbreak-satscan
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mqtt-ingest:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/barracks
+      DB_USERNAME: barracks
+      DB_PASSWORD: barracks_secret
+    networks:
+      - barracks-net
+
+  alert-broker:
+    build:
+      context: backend
+      dockerfile: alert-broker/Dockerfile
+    container_name: barracks-alert-broker
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nutrition-rf:
+        condition: service_started
+      outbreak-satscan:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/barracks
+      DB_USERNAME: barracks
+      DB_PASSWORD: barracks_secret
+      WECHAT_WEBHOOK: ${WECHAT_WEBHOOK:-}
+      SMS_API_KEY: ${SMS_API_KEY:-}
+    networks:
+      - barracks-net
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    container_name: barracks-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - alert-broker
+    networks:
+      - barracks-net
+
+  simulator:
+    build:
+      context: mqtt-simulator
+      dockerfile: Dockerfile
+    container_name: barracks-simulator
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      BROKER_HOST: emqx
+      INTERVAL: "7200"
+      SCURVY: "0"
+    networks:
+      - barracks-net
+
+  meal-planner:
+    build:
+      context: ./backend
+      dockerfile: meal-planner/Dockerfile
+    container_name: barracks-meal-planner
+    ports:
+      - "8084:8084"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - DB_URL=${DB_URL:-jdbc:postgresql://postgres:5432/barracks}
+      - DB_USERNAME=${DB_USERNAME:-barracks}
+      - DB_PASSWORD=${DB_PASSWORD:-barracks_secret}
+      - JAVA_OPTS=-Xmx512m -Xms256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - barracks-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8084/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  seir-simulator:
+    build:
+      context: ./backend
+      dockerfile: seir-simulator/Dockerfile
+    container_name: barracks-seir-simulator
+    ports:
+      - "8085:8085"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - DB_URL=${DB_URL:-jdbc:postgresql://postgres:5432/barracks}
+      - DB_USERNAME=${DB_USERNAME:-barracks}
+      - DB_PASSWORD=${DB_PASSWORD:-barracks_secret}
+      - JAVA_OPTS=-Xmx512m -Xms256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      alert-broker:
+        condition: service_started
+    networks:
+      - barracks-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8085/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  intervention-tree:
+    build:
+      context: ./backend
+      dockerfile: intervention-tree/Dockerfile
+    container_name: barracks-intervention-tree
+    ports:
+      - "8086:8086"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - DB_URL=${DB_URL:-jdbc:postgresql://postgres:5432/barracks}
+      - DB_USERNAME=${DB_USERNAME:-barracks}
+      - DB_PASSWORD=${DB_PASSWORD:-barracks_secret}
+      - JAVA_OPTS=-Xmx512m -Xms256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nutrition-rf:
+        condition: service_started
+    networks:
+      - barracks-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8086/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  supply-apriori:
+    build:
+      context: ./backend
+      dockerfile: supply-apriori/Dockerfile
+    container_name: barracks-supply-apriori
+    ports:
+      - "8087:8087"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - DB_URL=${DB_URL:-jdbc:postgresql://postgres:5432/barracks}
+      - DB_USERNAME=${DB_USERNAME:-barracks}
+      - DB_PASSWORD=${DB_PASSWORD:-barracks_secret}
+      - JAVA_OPTS=-Xmx512m -Xms256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - barracks-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8087/api/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: barracks-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - barracks-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: barracks-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    networks:
+      - barracks-net
+
+networks:
+  barracks-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  grafana-storage:
