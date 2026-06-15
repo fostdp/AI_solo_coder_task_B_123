@@ -1,0 +1,91 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: barracks-alert-broker
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/barracks_monitor
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.spatial.dialect.postgis.PostgisPG10Dialect
+        format_sql: true
+        jdbc:
+          batch_size: 50
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+notification:
+  wechat:
+    enabled: true
+    webhook-url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WEBHOOK_KEY_HERE
+  sms:
+    enabled: false
+    api-url: https://sms.example.com/api/send
+    api-key: YOUR_SMS_API_KEY_HERE
+    template-id: YOUR_TEMPLATE_ID_HERE
+
+algorithm:
+  nutrition:
+    vitamin-c-threshold: 60.0
+    protein-threshold: 50.0
+    fat-threshold: 40.0
+    random-forest:
+      num-trees: 100
+      max-depth: 10
+  epidemic:
+    positive-rate-threshold: 0.20
+    satscan:
+      max-window-days: 7
+      spatial-radius-meters: 100.0
+      significance-level: 0.05
+  model-path: /var/models/
+
+scheduling:
+  nutrition-prediction:
+    cron: "0 0 */2 * * ?"
+  epidemic-scan:
+    cron: "0 30 */2 * * ?"
+  notification-check:
+    cron: "0 */5 * * * ?"
+
+logging:
+  level:
+    com.juyan.barracks: DEBUG
+    org.hibernate.SQL: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoint:
+    prometheus:
+      enabled: true
