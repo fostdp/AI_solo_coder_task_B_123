@@ -254,4 +254,239 @@ class AprioriSupplyAnalyzerTest {
         assertTrue(containsItemSet(rareItemResult, itemSetOf("常见项_A")),
                 "出现100次的常见项应被挖掘出来");
     }
+
+    @Test
+    void testMeatShortageHighConfidence() {
+        AprioriSupplyAnalyzer analyzer = new AprioriSupplyAnalyzer();
+        List<Set<String>> transactions = new ArrayList<>();
+
+        for (int i = 0; i < 10; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("天气_大雪");
+            t.add("短缺_肉类");
+            transactions.add(t);
+        }
+
+        for (int i = 0; i < 5; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("路线_北线");
+            t.add("短缺_肉类");
+            transactions.add(t);
+        }
+
+        for (int i = 0; i < 3; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("天气_暴雨");
+            t.add("短缺_蔬菜类");
+            transactions.add(t);
+        }
+
+        for (int i = 0; i < 2; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("天气_晴");
+            t.add("短缺_豆制品");
+            transactions.add(t);
+        }
+
+        assertEquals(20, transactions.size(), "测试事务总数应为20条");
+
+        double minSupport = 0.20;
+        double minConfidence = 0.6;
+
+        List<AssociationRuleResult.ItemSet> frequentItemSets =
+                analyzer.findFrequentItemSets(transactions, minSupport);
+
+        assertNotNull(frequentItemSets, "频繁项集结果不应为空");
+        assertFalse(frequentItemSets.isEmpty(), "应能挖掘出至少一些频繁项集");
+
+        assertTrue(containsItemSet(frequentItemSets, itemSetOf("短缺_肉类")),
+                "\"短缺_肉类\"应是频繁项集");
+
+        List<AssociationRuleResult.ItemSet> topItems = analyzer.getTopFrequentItems(frequentItemSets, 3);
+        assertNotNull(topItems, "Top频繁项集不应为空");
+        assertTrue(topItems.size() <= 3, "Top N结果不应超过3个");
+        assertEquals("短缺_肉类", topItems.get(0).items.iterator().next(),
+                "最频繁的1-项集应为短缺_肉类");
+
+        List<AssociationRuleResult> rules =
+                analyzer.generateAssociationRules(frequentItemSets, transactions, minConfidence);
+
+        assertNotNull(rules, "关联规则结果不应为空");
+        assertFalse(rules.isEmpty(), "应生成至少一些关联规则");
+
+        List<AssociationRuleResult> meatConsequentRules =
+                analyzer.getRulesByConsequent(rules, "短缺_肉类");
+        assertNotNull(meatConsequentRules, "按后件筛选的规则列表不应为空");
+        assertFalse(meatConsequentRules.isEmpty(), "应找到以后件为短缺_肉类的规则");
+
+        List<AssociationRuleResult> snowAntecedentRules =
+                analyzer.getRulesByAntecedent(rules, "天气_大雪");
+        assertNotNull(snowAntecedentRules, "按前件筛选的规则列表不应为空");
+
+        boolean foundSnowMeatRule = false;
+        AssociationRuleResult snowMeatRule = null;
+        for (AssociationRuleResult rule : rules) {
+            Set<String> ant = new HashSet<>(rule.getAntecedent());
+            Set<String> cons = new HashSet<>(rule.getConsequent());
+            if (ant.contains("天气_大雪") && cons.contains("短缺_肉类") && ant.size() == 1) {
+                foundSnowMeatRule = true;
+                snowMeatRule = rule;
+                break;
+            }
+        }
+
+        assertTrue(foundSnowMeatRule,
+                "应能找到 {天气_大雪} → {短缺_肉类} 的规则");
+
+        assertNotNull(snowMeatRule);
+        assertTrue(snowMeatRule.getConfidence().compareTo(BigDecimal.valueOf(0.7)) >= 0,
+                "规则 {天气_大雪} → {短缺_肉类} 的置信度应≥0.7，实际: " +
+                        snowMeatRule.getConfidence());
+
+        assertTrue(snowMeatRule.getLift().compareTo(BigDecimal.ONE) > 0,
+                "规则 {天气_大雪} → {短缺_肉类} 的Lift应>1，实际: " +
+                        snowMeatRule.getLift());
+    }
+
+    @Test
+    void testLowSupportGeneratesManyRules() {
+        AprioriSupplyAnalyzer analyzer = new AprioriSupplyAnalyzer();
+        List<Set<String>> transactions = new ArrayList<>();
+
+        String[] items = {
+                "A", "B", "C", "D", "E", "F", "G", "H",
+                "天气_晴", "天气_雨", "天气_雪",
+                "短缺_肉类", "短缺_蔬菜", "短缺_豆制品",
+                "路线_东", "路线_西", "路线_南", "路线_北"
+        };
+
+        Random random = new Random(42);
+        for (int i = 0; i < 50; i++) {
+            Set<String> t = new HashSet<>();
+            int numItems = 2 + random.nextInt(5);
+            List<String> shuffled = new ArrayList<>(Arrays.asList(items));
+            Collections.shuffle(shuffled, random);
+            for (int j = 0; j < numItems && j < shuffled.size(); j++) {
+                t.add(shuffled.get(j));
+            }
+            transactions.add(t);
+        }
+
+        assertEquals(50, transactions.size(), "测试事务总数应为50条");
+
+        double highSupport = 0.30;
+        double lowSupport = 0.05;
+
+        List<AssociationRuleResult.ItemSet> highSupportItemSets =
+                analyzer.findFrequentItemSets(transactions, highSupport);
+        List<AssociationRuleResult> highSupportRules =
+                analyzer.generateAssociationRules(highSupportItemSets, transactions, 0.5);
+
+        List<AssociationRuleResult.ItemSet> lowSupportItemSets =
+                analyzer.findFrequentItemSets(transactions, lowSupport);
+        List<AssociationRuleResult> lowSupportRules =
+                analyzer.generateAssociationRules(lowSupportItemSets, transactions, 0.5);
+
+        int highRuleCount = analyzer.getRuleCount(highSupportRules);
+        int lowRuleCount = analyzer.getRuleCount(lowSupportRules);
+
+        assertTrue(lowRuleCount > highRuleCount * 2,
+                "低支持度的规则数应显著多于高支持度（至少2倍以上）。" +
+                        "低支持度: " + lowRuleCount + "，高支持度: " + highRuleCount);
+
+        int high2ItemSets = analyzer.countItemSetsBySize(highSupportItemSets, 2);
+        int low2ItemSets = analyzer.countItemSetsBySize(lowSupportItemSets, 2);
+        assertTrue(low2ItemSets >= high2ItemSets,
+                "低支持度的2项集数量应不少于高支持度。" +
+                        "低: " + low2ItemSets + "，高: " + high2ItemSets);
+
+        int high3ItemSets = analyzer.countItemSetsBySize(highSupportItemSets, 3);
+        int low3ItemSets = analyzer.countItemSetsBySize(lowSupportItemSets, 3);
+
+        assertTrue(lowSupportItemSets.size() > highSupportItemSets.size(),
+                "低支持度的频繁项集总数应更多。低: " + lowSupportItemSets.size() +
+                        "，高: " + highSupportItemSets.size());
+
+        if (high3ItemSets == 0) {
+            assertTrue(low3ItemSets > 0 || lowSupportItemSets.size() > highSupportItemSets.size(),
+                    "支持度降低时，应能挖掘出更高阶的项集或更多项集");
+        } else {
+            assertTrue(low3ItemSets >= high3ItemSets,
+                    "低支持度的3项集数量应不少于高支持度");
+        }
+    }
+
+    @Test
+    void testEmptyTransactionsReturnsEmptySet() {
+        AprioriSupplyAnalyzer analyzer = new AprioriSupplyAnalyzer();
+
+        List<AssociationRuleResult.ItemSet> nullResult =
+                analyzer.findFrequentItemSets(null, 0.3);
+        assertNotNull(nullResult, "null事务列表的频繁项集结果不应为null");
+        assertTrue(nullResult.isEmpty(), "null事务列表应返回空频繁项集");
+
+        List<AssociationRuleResult> nullRules =
+                analyzer.generateAssociationRules(null, null, 0.5);
+        assertNotNull(nullRules, "null输入的关联规则结果不应为null");
+        assertTrue(nullRules.isEmpty(), "null输入应返回空关联规则");
+
+        List<Set<String>> emptyTransactions = new ArrayList<>();
+        List<AssociationRuleResult.ItemSet> emptyResult =
+                analyzer.findFrequentItemSets(emptyTransactions, 0.3);
+        assertNotNull(emptyResult, "空列表的频繁项集结果不应为null");
+        assertTrue(emptyResult.isEmpty(), "空列表应返回空频繁项集");
+
+        List<Set<String>> transactionsWithEmptySets = new ArrayList<>();
+        transactionsWithEmptySets.add(new HashSet<>());
+        transactionsWithEmptySets.add(itemSetOf("天气_晴"));
+        transactionsWithEmptySets.add(new HashSet<>());
+
+        List<AssociationRuleResult.ItemSet> emptySetResult =
+                analyzer.findFrequentItemSets(transactionsWithEmptySets, 0.3);
+        assertNotNull(emptySetResult, "包含空集的事务结果不应为null");
+
+        List<AssociationRuleResult.ItemSet> zeroSupportResult =
+                analyzer.findFrequentItemSets(createTestTransactions(), 0.0);
+        assertNotNull(zeroSupportResult, "minSupport=0时结果不应为null");
+        assertFalse(zeroSupportResult.isEmpty(), "minSupport=0钳制后应能挖掘出项集");
+
+        List<AssociationRuleResult.ItemSet> overOneSupportResult =
+                analyzer.findFrequentItemSets(createTestTransactions(), 2.0);
+        assertNotNull(overOneSupportResult, "minSupport>1时结果不应为null");
+
+        List<AssociationRuleResult.ItemSet> negativeSupportResult =
+                analyzer.findFrequentItemSets(createTestTransactions(), -0.5);
+        assertNotNull(negativeSupportResult, "minSupport<0时结果不应为null");
+        assertFalse(negativeSupportResult.isEmpty(), "minSupport<0钳制后应能挖掘出项集");
+
+        List<AssociationRuleResult.ItemSet> freqItems =
+                analyzer.findFrequentItemSets(createTestTransactions(), 0.3);
+        List<AssociationRuleResult> zeroConfidenceRules =
+                analyzer.generateAssociationRules(freqItems, createTestTransactions(), 0.0);
+        assertNotNull(zeroConfidenceRules, "minConfidence=0时结果不应为null");
+
+        List<AssociationRuleResult> overOneConfidenceRules =
+                analyzer.generateAssociationRules(freqItems, createTestTransactions(), 2.0);
+        assertNotNull(overOneConfidenceRules, "minConfidence>1时结果不应为null");
+
+        assertEquals(0, analyzer.getTotalItemCount(null),
+                "null事务的总项数应为0");
+        assertEquals(0, analyzer.getTotalItemCount(new ArrayList<>()),
+                "空事务列表的总项数应为0");
+
+        assertTrue(analyzer.getAllUniqueItems(null).isEmpty(),
+                "null事务的唯一项集合应为空");
+        assertTrue(analyzer.getAllUniqueItems(new ArrayList<>()).isEmpty(),
+                "空事务列表的唯一项集合应为空");
+
+        assertTrue(analyzer.getItemFrequencyMap(null).isEmpty(),
+                "null事务的频率Map应为空");
+        assertTrue(analyzer.getItemFrequencyMap(new ArrayList<>()).isEmpty(),
+                "空事务列表的频率Map应为空");
+
+        assertEquals(0, analyzer.countItemSetsBySize(null, 1),
+                "null项集列表的计数应为0");
+        assertEquals(0, analyzer.getRuleCount(null),
+                "null规则列表的计数应为0");
+    }
 }

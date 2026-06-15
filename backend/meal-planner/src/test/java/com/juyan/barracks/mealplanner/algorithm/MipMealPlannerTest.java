@@ -168,4 +168,113 @@ class MipMealPlannerTest {
         assertNotNull(result.getAvgDailyCalorie(), "avgDailyCalorie字段不应为空");
         assertNotNull(result.getSolverStatus(), "solverStatus字段不应为空");
     }
+
+    @Test
+    void testOptimalCostMinimization() {
+        List<FoodItem> richItems = createRichFoodItems();
+        MipMealPlanner planner = new MipMealPlanner(richItems, 1,
+                70, 45, 80, 1800, 3000);
+
+        MipMealPlanner.MealPlanResult result = planner.solve();
+
+        assertNotNull(result, "求解结果不应为空");
+        assertTrue(result.isFeasible(), "应返回可行解");
+        assertTrue(
+                "OPTIMAL".equals(result.getSolverStatus()) || "FEASIBLE".equals(result.getSolverStatus()),
+                "求解状态应为OPTIMAL或FEASIBLE，实际: " + result.getSolverStatus()
+        );
+
+        Map<Integer, MipMealPlanner.DailyNutrition> nutritionMap = result.getDailyNutritionMap();
+        for (Map.Entry<Integer, MipMealPlanner.DailyNutrition> entry : nutritionMap.entrySet()) {
+            MipMealPlanner.DailyNutrition dn = entry.getValue();
+            assertTrue(dn.getProtein().compareTo(BigDecimal.valueOf(70)) >= 0,
+                    "第" + entry.getKey() + "天蛋白质应≥70g，实际: " + dn.getProtein());
+            assertTrue(dn.getFat().compareTo(BigDecimal.valueOf(45)) >= 0,
+                    "第" + entry.getKey() + "天脂肪应≥45g，实际: " + dn.getFat());
+            assertTrue(dn.getVitaminC().compareTo(BigDecimal.valueOf(80)) >= 0,
+                    "第" + entry.getKey() + "天维C应≥80mg，实际: " + dn.getVitaminC());
+            assertTrue(dn.getCalorie().compareTo(BigDecimal.valueOf(1800)) >= 0,
+                    "第" + entry.getKey() + "天热量应≥1800kcal，实际: " + dn.getCalorie());
+            assertTrue(dn.getCalorie().compareTo(BigDecimal.valueOf(3000)) <= 0,
+                    "第" + entry.getKey() + "天热量应≤3000kcal，实际: " + dn.getCalorie());
+        }
+
+        assertNotNull(result.getObjectiveValue(), "objectiveValue不应为空");
+        assertTrue(result.getObjectiveValue().compareTo(BigDecimal.ZERO) > 0,
+                "objectiveValue应大于0");
+
+        BigDecimal singlePersonCost = result.getTotalCost();
+        BigDecimal diff = result.getObjectiveValue().subtract(singlePersonCost).abs();
+        assertTrue(diff.compareTo(BigDecimal.valueOf(10.0)) < 0,
+                "objectiveValue与单人份总成本应接近，差值: " + diff
+                        + "，objectiveValue: " + result.getObjectiveValue()
+                        + "，totalCost: " + singlePersonCost);
+    }
+
+    @Test
+    void testInfeasibleReturnsClosestPlan() {
+        List<FoodItem> richItems = createRichFoodItems();
+        MipMealPlanner planner = new MipMealPlanner(richItems, 1,
+                500, 300, 500, 5000, 6000);
+
+        MipMealPlanner.MealPlanResult result = planner.solve();
+
+        assertNotNull(result, "求解结果不应为空");
+        assertNotNull(result.getMealItems(), "餐单项列表不应为空");
+        assertFalse(result.getMealItems().isEmpty(), "至少应返回一些餐单项");
+
+        String status = result.getSolverStatus();
+        boolean validStatus = "RELAXED_FEASIBLE".equals(status)
+                || "GREEDY_FALLBACK".equals(status)
+                || "FALLBACK_DEFAULT".equals(status);
+        assertTrue(validStatus,
+                "求解状态应为RELAXED_FEASIBLE、GREEDY_FALLBACK或FALLBACK_DEFAULT之一，实际: " + status);
+
+        if ("RELAXED_FEASIBLE".equals(status)) {
+            assertNotNull(result.getRelaxLevel(), "RELAXED_FEASIBLE状态下relaxLevel不应为空");
+            assertTrue(result.getRelaxLevel() > 0,
+                    "RELAXED_FEASIBLE状态下relaxLevel应大于0，实际: " + result.getRelaxLevel());
+        }
+
+        assertNotNull(result.getDailyNutritionMap(), "每日营养映射不应为空");
+        assertFalse(result.getDailyNutritionMap().isEmpty(), "每日营养映射不应为空");
+        assertNotNull(result.getTotalCost(), "总成本不应为空");
+    }
+
+    @Test
+    void testTimeoutReturnsGreedySolution() {
+        List<FoodItem> richItems = createRichFoodItems();
+
+        MipMealPlanner planner = new MipMealPlanner(richItems, 10,
+                80, 50, 100, 2000, 3000, 0.001);
+
+        MipMealPlanner.MealPlanResult result = null;
+        try {
+            result = planner.solve();
+        } catch (Exception e) {
+            fail("求解不应抛出异常: " + e.getMessage());
+        }
+
+        assertNotNull(result, "求解结果不应为空");
+        assertNotNull(result.getMealItems(), "餐单项列表不应为空");
+        assertFalse(result.getMealItems().isEmpty(), "至少应返回一些餐单项");
+
+        String status = result.getSolverStatus();
+        boolean validStatus = "GREEDY_FALLBACK".equals(status)
+                || "FALLBACK_DEFAULT".equals(status)
+                || "OPTIMAL".equals(status)
+                || "FEASIBLE".equals(status);
+        assertTrue(validStatus,
+                "求解状态应为GREEDY_FALLBACK、FALLBACK_DEFAULT、OPTIMAL或FEASIBLE之一，实际: " + status);
+
+        MipMealPlanner.MealPlanResult greedyResult = planner.greedySolve();
+        assertNotNull(greedyResult, "贪心算法结果不应为空");
+        assertNotNull(greedyResult.getMealItems(), "贪心算法餐单项列表不应为空");
+        assertFalse(greedyResult.getMealItems().isEmpty(), "贪心算法至少应返回一些餐单项");
+        assertEquals("GREEDY_FALLBACK", greedyResult.getSolverStatus(),
+                "贪心算法状态应为GREEDY_FALLBACK");
+        assertTrue(greedyResult.isFeasible(), "贪心算法结果应标记为可行");
+        assertNotNull(greedyResult.getTotalCost(), "贪心算法总成本不应为空");
+        assertNotNull(greedyResult.getObjectiveValue(), "贪心算法objectiveValue不应为空");
+    }
 }

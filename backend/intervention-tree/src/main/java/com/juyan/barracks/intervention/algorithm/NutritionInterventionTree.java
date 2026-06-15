@@ -86,13 +86,24 @@ public class NutritionInterventionTree implements Serializable {
     public static class Intervention implements Serializable {
         private static final long serialVersionUID = 1L;
 
+        public enum RecommendationSource {
+            DECISION_TREE,
+            FALLBACK_RULE,
+            COMBINED,
+            DEFAULT_FALLBACK
+        }
+
         private SupplementCatalog.Supplement supplement;
         private int durationDays;
         private String dosage;
         private List<String> reasons;
+        private RecommendationSource recommendationSource;
+        private String fallbackReason;
+        private boolean combinedRecommendation;
 
         public Intervention() {
             this.reasons = new ArrayList<>();
+            this.recommendationSource = RecommendationSource.FALLBACK_RULE;
         }
 
         public Intervention(SupplementCatalog.Supplement supplement, int durationDays) {
@@ -100,11 +111,41 @@ public class NutritionInterventionTree implements Serializable {
             this.durationDays = durationDays;
             this.dosage = supplement.getDosageDescription();
             this.reasons = new ArrayList<>(supplement.getMatchedRules());
+            this.recommendationSource = RecommendationSource.FALLBACK_RULE;
         }
 
         public void addReason(String reason) {
             if (!reasons.contains(reason)) {
                 reasons.add(reason);
+            }
+        }
+
+        public void adjustDosageByRiskLevel(double riskLevel) {
+            double multiplier;
+            int extraDays;
+            if (riskLevel >= 0.9) {
+                multiplier = 1.5;
+                extraDays = 7;
+            } else if (riskLevel >= 0.7) {
+                multiplier = 1.0;
+                extraDays = 0;
+            } else if (riskLevel >= 0.5) {
+                multiplier = 0.8;
+                extraDays = 0;
+            } else {
+                multiplier = 0.5;
+                extraDays = -3;
+            }
+
+            int originalDosage = supplement.getDailyDosage();
+            int adjustedDosage = (int) Math.round(originalDosage * multiplier);
+            supplement.setDailyDosage(Math.max(5, adjustedDosage));
+            this.dosage = supplement.getDosageDescription();
+            this.durationDays = Math.max(3, durationDays + extraDays);
+
+            String doseAdjust = String.format("风险等级(%.2f)剂量调整: ×%.1f", riskLevel, multiplier);
+            if (!reasons.contains(doseAdjust)) {
+                reasons.add(doseAdjust);
             }
         }
     }
@@ -318,39 +359,147 @@ public class NutritionInterventionTree implements Serializable {
                 .collect(Collectors.joining("、"));
     }
 
+    private boolean lastPredictUsedFallback = false;
+    private String lastFallbackReason = null;
+
+    public boolean isFallbackUsed() {
+        return lastPredictUsedFallback;
+    }
+
+    public String getLastFallbackReason() {
+        return lastFallbackReason;
+    }
+
+    public List<String> getFallbackRuleDescriptions() {
+        List<String> rules = new ArrayList<>();
+        rules.add("VitaminCRisk > 0.7 → 干枣 + 新鲜蔬菜");
+        rules.add("ProteinRisk > 0.7 → 肉干 + 豆制品");
+        rules.add("FatRisk > 0.7 → 坚果");
+        rules.add("Age > 40 → 鱼肝油");
+        rules.add("南方士兵 → 豆制品比例+30%");
+        rules.add("北方士兵 → 蔬菜比例+30%");
+        return rules;
+    }
+
+    public int getTreeDepth() {
+        return calculateTreeDepth(root);
+    }
+
+    private int calculateTreeDepth(Node node) {
+        if (node == null) return 0;
+        if (node.isLeaf) return node.depth + 1;
+        return Math.max(calculateTreeDepth(node.left), calculateTreeDepth(node.right));
+    }
+
     public List<Intervention> predict(SoldierFeatures features, int defaultDurationDays) {
-        List<Intervention> ruleBased = applyBuiltinRules(features, defaultDurationDays);
+        lastPredictUsedFallback = false;
+        lastFallbackReason = null;
 
-        if (!trained) {
-            log.debug("决策树未训练，使用内置规则");
-            return ruleBased;
-        }
+        try {
+            List<Intervention> ruleBased = applyBuiltinRules(features, defaultDurationDays);
+            markSource(ruleBased, Intervention.RecommendationSource.FALLBACK_RULE);
 
-        List<Intervention> treeBased = predictWithTree(features, defaultDurationDays);
+            List<Intervention> treeBased = Collections.emptyList();
+            boolean treeSuccess = false;
 
-        Set<SupplementCatalog.SupplementType> combinedTypes = new LinkedHashSet<>();
-        Map<SupplementCatalog.SupplementType, Intervention> interventionMap = new LinkedHashMap<>();
-
-        for (Intervention intervention : ruleBased) {
-            SupplementCatalog.SupplementType type = intervention.getSupplement().getType();
-            combinedTypes.add(type);
-            interventionMap.put(type, intervention);
-        }
-
-        for (Intervention intervention : treeBased) {
-            SupplementCatalog.SupplementType type = intervention.getSupplement().getType();
-            combinedTypes.add(type);
-            if (interventionMap.containsKey(type)) {
-                Intervention existing = interventionMap.get(type);
-                for (String reason : intervention.getReasons()) {
-                    existing.addReason(reason);
+            if (trained) {
+                try {
+                    treeBased = predictWithTree(features, defaultDurationDays);
+                    markSource(treeBased, Intervention.RecommendationSource.DECISION_TREE);
+                    treeSuccess = true;
+                } catch (Exception e) {
+                    log.warn("决策树预测异常，回退到内置规则: {}", e.getMessage());
+                    lastPredictUsedFallback = true;
+                    lastFallbackReason = "决策树异常: " + e.getMessage();
                 }
             } else {
+                lastPredictUsedFallback = true;
+                lastFallbackReason = "决策树未训练";
+            }
+
+            boolean hasMultipleDeficiencies =
+                    features.getVitaminCRisk() > 0.7 && features.getProteinRisk() > 0.7
+                            || features.getVitaminCRisk() > 0.7 && features.getFatRisk() > 0.7
+                            || features.getProteinRisk() > 0.7 && features.getFatRisk() > 0.7;
+
+            Set<SupplementCatalog.SupplementType> combinedTypes = new LinkedHashSet<>();
+            Map<SupplementCatalog.SupplementType, Intervention> interventionMap = new LinkedHashMap<>();
+
+            for (Intervention intervention : ruleBased) {
+                SupplementCatalog.SupplementType type = intervention.getSupplement().getType();
+                combinedTypes.add(type);
                 interventionMap.put(type, intervention);
             }
-        }
 
-        return new ArrayList<>(interventionMap.values());
+            for (Intervention intervention : treeBased) {
+                SupplementCatalog.SupplementType type = intervention.getSupplement().getType();
+                combinedTypes.add(type);
+                if (interventionMap.containsKey(type)) {
+                    Intervention existing = interventionMap.get(type);
+                    for (String reason : intervention.getReasons()) {
+                        existing.addReason(reason);
+                    }
+                    if (treeSuccess && !lastPredictUsedFallback) {
+                        existing.setRecommendationSource(Intervention.RecommendationSource.COMBINED);
+                    }
+                } else {
+                    interventionMap.put(type, intervention);
+                }
+            }
+
+            List<Intervention> result = new ArrayList<>(interventionMap.values());
+
+            if (combinedTypes.size() >= 2 || hasMultipleDeficiencies) {
+                for (Intervention iv : result) {
+                    iv.setCombinedRecommendation(true);
+                    if (iv.getRecommendationSource() == Intervention.RecommendationSource.FALLBACK_RULE) {
+                        iv.setRecommendationSource(Intervention.RecommendationSource.COMBINED);
+                    }
+                }
+            }
+
+            if (lastPredictUsedFallback) {
+                for (Intervention iv : result) {
+                    iv.setFallbackReason(lastFallbackReason);
+                }
+            }
+
+            for (Intervention iv : result) {
+                iv.adjustDosageByRiskLevel(features.getRiskLevel());
+            }
+
+            if (result.isEmpty() && features.getRiskLevel() > 0.5) {
+                lastPredictUsedFallback = true;
+                lastFallbackReason = "无匹配规则，返回默认推荐";
+                result.add(createDefaultIntervention(defaultDurationDays));
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            log.error("预测过程发生严重异常，返回默认推荐: {}", e.getMessage());
+            lastPredictUsedFallback = true;
+            lastFallbackReason = "严重异常: " + e.getMessage();
+            List<Intervention> fallback = new ArrayList<>();
+            fallback.add(createDefaultIntervention(defaultDurationDays));
+            return fallback;
+        }
+    }
+
+    private void markSource(List<Intervention> interventions, Intervention.RecommendationSource source) {
+        for (Intervention iv : interventions) {
+            iv.setRecommendationSource(source);
+        }
+    }
+
+    private Intervention createDefaultIntervention(int durationDays) {
+        SupplementCatalog.Supplement multivitamin = SupplementCatalog.getSupplement(
+                SupplementCatalog.SupplementType.NUTS);
+        multivitamin.addMatchedRule("默认推荐: 坚果补充基础营养");
+        Intervention intervention = new Intervention(multivitamin, durationDays);
+        intervention.setRecommendationSource(Intervention.RecommendationSource.DEFAULT_FALLBACK);
+        intervention.setFallbackReason(lastFallbackReason);
+        return intervention;
     }
 
     private List<Intervention> predictWithTree(SoldierFeatures features, int defaultDurationDays) {

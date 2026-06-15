@@ -11,11 +11,15 @@ import java.util.stream.Collectors;
 public class AprioriSupplyAnalyzer {
 
     public List<AssociationRuleResult.ItemSet> findFrequentItemSets(List<Set<String>> transactions, double minSupport) {
+        if (transactions == null) {
+            return new ArrayList<>();
+        }
         int totalTransactions = transactions.size();
         if (totalTransactions == 0) {
             return new ArrayList<>();
         }
 
+        minSupport = clampSupport(minSupport);
         int minSupportCount = (int) Math.ceil(minSupport * totalTransactions);
         log.debug("总事务数: {}, 最小支持度计数: {}", totalTransactions, minSupportCount);
 
@@ -160,11 +164,16 @@ public class AprioriSupplyAnalyzer {
             double minConfidence) {
 
         List<AssociationRuleResult> rules = new ArrayList<>();
+        if (frequentItemSets == null || transactions == null) {
+            return rules;
+        }
         int totalTransactions = transactions.size();
 
         if (totalTransactions == 0) {
             return rules;
         }
+
+        minConfidence = clampConfidence(minConfidence);
 
         Map<Set<String>, AssociationRuleResult.ItemSet> itemSetMap = new HashMap<>();
         for (AssociationRuleResult.ItemSet itemSet : frequentItemSets) {
@@ -306,5 +315,115 @@ public class AprioriSupplyAnalyzer {
             return item.replace("兵营_", "") + "兵营";
         }
         return item;
+    }
+
+    private double clampSupport(double minSupport) {
+        if (minSupport < 0.001) {
+            return 0.001;
+        }
+        if (minSupport > 1.0) {
+            return 1.0;
+        }
+        return minSupport;
+    }
+
+    private double clampConfidence(double minConfidence) {
+        if (minConfidence < 0.001) {
+            return 0.001;
+        }
+        if (minConfidence > 1.0) {
+            return 1.0;
+        }
+        return minConfidence;
+    }
+
+    public List<AssociationRuleResult.ItemSet> getTopFrequentItems(
+            List<AssociationRuleResult.ItemSet> frequentItemSets, int topN) {
+        if (frequentItemSets == null || frequentItemSets.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<AssociationRuleResult.ItemSet> oneItemSets = frequentItemSets.stream()
+                .filter(itemSet -> itemSet.items.size() == 1)
+                .sorted((a, b) -> Integer.compare(b.count, a.count))
+                .limit(topN)
+                .collect(Collectors.toList());
+        return oneItemSets;
+    }
+
+    public List<AssociationRuleResult> getRulesByConsequent(
+            List<AssociationRuleResult> rules, String consequentItem) {
+        if (rules == null || rules.isEmpty() || consequentItem == null) {
+            return new ArrayList<>();
+        }
+        return rules.stream()
+                .filter(rule -> rule.getConsequent().contains(consequentItem))
+                .collect(Collectors.toList());
+    }
+
+    public List<AssociationRuleResult> getRulesByAntecedent(
+            List<AssociationRuleResult> rules, String antecedentItem) {
+        if (rules == null || rules.isEmpty() || antecedentItem == null) {
+            return new ArrayList<>();
+        }
+        return rules.stream()
+                .filter(rule -> rule.getAntecedent().contains(antecedentItem))
+                .collect(Collectors.toList());
+    }
+
+    public int countItemSetsBySize(List<AssociationRuleResult.ItemSet> frequentItemSets, int k) {
+        if (frequentItemSets == null || frequentItemSets.isEmpty()) {
+            return 0;
+        }
+        return (int) frequentItemSets.stream()
+                .filter(itemSet -> itemSet.items.size() == k)
+                .count();
+    }
+
+    public int getRuleCount(List<AssociationRuleResult> rules) {
+        if (rules == null) {
+            return 0;
+        }
+        return rules.size();
+    }
+
+    public int getTotalItemCount(List<Set<String>> transactions) {
+        if (transactions == null || transactions.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (Set<String> transaction : transactions) {
+            if (transaction != null) {
+                total += transaction.size();
+            }
+        }
+        return total;
+    }
+
+    public Set<String> getAllUniqueItems(List<Set<String>> transactions) {
+        Set<String> uniqueItems = new HashSet<>();
+        if (transactions == null || transactions.isEmpty()) {
+            return uniqueItems;
+        }
+        for (Set<String> transaction : transactions) {
+            if (transaction != null) {
+                uniqueItems.addAll(transaction);
+            }
+        }
+        return uniqueItems;
+    }
+
+    public Map<String, Integer> getItemFrequencyMap(List<Set<String>> transactions) {
+        Map<String, Integer> frequencyMap = new HashMap<>();
+        if (transactions == null || transactions.isEmpty()) {
+            return frequencyMap;
+        }
+        for (Set<String> transaction : transactions) {
+            if (transaction != null) {
+                for (String item : transaction) {
+                    frequencyMap.merge(item, 1, Integer::sum);
+                }
+            }
+        }
+        return frequencyMap;
     }
 }

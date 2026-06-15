@@ -177,4 +177,139 @@ class SeirModelTest {
         assertTrue(lowR0Result.getR0() < 1.0,
                 "低传播场景R0应<1，实际: " + lowR0Result.getR0());
     }
+
+    @Test
+    void testQuarantineReducesPeakBy50Percent() {
+        int population = 200;
+        int initialInfected = 5;
+        int days = 60;
+
+        SeirModel model = new SeirModel(0.5, DEFAULT_SIGMA, 0.2);
+        SeirModel.SimulationParams params = SeirModel.SimulationParams.builder()
+                .beta(0.5)
+                .sigma(DEFAULT_SIGMA)
+                .gamma(0.2)
+                .build();
+        List<ContactEdge> edges = new ArrayList<>();
+
+        SeirResult noQuarantineResult = model.simulate(population, initialInfected, days, params, edges, null);
+
+        SeirModel.QuarantineConfig quarantineConfig = SeirModel.QuarantineConfig.builder()
+                .quarantineStartDay(5)
+                .isolationEffectiveness(0.7)
+                .quarantineRate(0.6)
+                .build();
+
+        SeirResult withQuarantineResult = model.simulate(population, initialInfected, days, params, edges, quarantineConfig);
+
+        assertNotNull(noQuarantineResult, "无隔离结果不应为空");
+        assertNotNull(withQuarantineResult, "有隔离结果不应为空");
+        assertTrue(noQuarantineResult.getPeakInfected() > 0, "无隔离峰值应大于0");
+        assertTrue(withQuarantineResult.getPeakInfected() > 0, "有隔离峰值应大于0");
+
+        int noQuarantinePeak = noQuarantineResult.getPeakInfected();
+        int withQuarantinePeak = withQuarantineResult.getPeakInfected();
+
+        assertTrue(withQuarantinePeak < noQuarantinePeak,
+                "有隔离峰值(" + withQuarantinePeak + ")应小于无隔离峰值(" + noQuarantinePeak + ")");
+
+        double peakReductionRate = (double) (noQuarantinePeak - withQuarantinePeak) / noQuarantinePeak;
+        assertTrue(peakReductionRate >= 0.35,
+                "隔离应使峰值降低至少35%，实际降低: " + String.format("%.2f%%", peakReductionRate * 100));
+
+        int noQuarantineTotal = noQuarantineResult.getTotalInfected();
+        int withQuarantineTotal = withQuarantineResult.getTotalInfected();
+        assertTrue(withQuarantineTotal <= noQuarantineTotal,
+                "有隔离总感染(" + withQuarantineTotal + ")应不高于无隔离总感染(" + noQuarantineTotal + ")");
+
+        int noQuarantinePeakDay = noQuarantineResult.getPeakDay();
+        int withQuarantinePeakDay = withQuarantineResult.getPeakDay();
+        assertTrue(withQuarantinePeakDay >= noQuarantinePeakDay,
+                "有隔离峰值日(" + withQuarantinePeakDay + ")应不早于无隔离峰值日(" + noQuarantinePeakDay + ")");
+    }
+
+    @Test
+    void testZeroContactNetworkStopsTransmission() {
+        int population = 100;
+        int initialInfected = 3;
+        int days = 30;
+
+        SeirModel model = createDefaultModel();
+        SeirModel.SimulationParams params = createDefaultParams();
+
+        List<ContactEdge> zeroEdges = new ArrayList<>();
+        ContactEdge zeroEdge = new ContactEdge();
+        zeroEdge.setSoldierIdA(1L);
+        zeroEdge.setSoldierIdB(2L);
+        zeroEdge.setContactType("ROOMMATE");
+        zeroEdge.setContactFrequencyPerDay(0.0);
+        zeroEdges.add(zeroEdge);
+
+        SeirResult zeroContactResult = model.simulate(population, initialInfected, days, params, zeroEdges, null);
+        assertNotNull(zeroContactResult, "零接触结果不应为空");
+
+        int finalTotalInfected = zeroContactResult.getTotalInfected();
+        assertTrue(finalTotalInfected <= initialInfected,
+                "零接触时总感染(" + finalTotalInfected + ")应不超过初始感染(" + initialInfected + ")");
+
+        int maxInfected = zeroContactResult.getPeakInfected();
+        assertTrue(maxInfected <= initialInfected,
+                "零接触时峰值感染(" + maxInfected + ")应不超过初始感染(" + initialInfected + ")");
+
+        for (SeirResult.SeirDayPoint point : zeroContactResult.getDayPoints()) {
+            int totalInfectedPoint = point.getInfected() + point.getExposed() + point.getRecovered() + point.getQuarantined();
+            assertTrue(totalInfectedPoint <= initialInfected + 1,
+                    "第" + point.getDay() + "天感染人数(" + totalInfectedPoint + ")不应扩散");
+        }
+
+        List<ContactEdge> emptyEdges = new ArrayList<>();
+        SeirResult emptyContactResult = model.simulate(population, initialInfected, days, params, emptyEdges, null);
+        assertNotNull(emptyContactResult, "空接触结果不应为空");
+        int emptyFinalTotal = emptyContactResult.getTotalInfected();
+        assertTrue(emptyFinalTotal <= initialInfected,
+                "空接触时总感染(" + emptyFinalTotal + ")应不超过初始感染(" + initialInfected + ")");
+    }
+
+    @Test
+    void testInvalidParametersAreClamped() {
+        assertDoesNotThrow(() -> {
+            SeirModel negBetaModel = new SeirModel(-0.5, DEFAULT_SIGMA, DEFAULT_GAMMA);
+            double clampedBeta = SeirModel.clampBeta(-0.5);
+            assertEquals(0.001, clampedBeta, 0.0001, "负数beta应钳制到最小值");
+            assertEquals(SeirModel.clampBeta(negBetaModel.getR0() * DEFAULT_GAMMA), 0.001, 0.001,
+                    "模型内部beta应已钳制");
+        }, "负数beta不应抛异常");
+
+        double largeBeta = SeirModel.clampBeta(100.0);
+        assertEquals(10.0, largeBeta, 0.0001, "过大beta应钳制到最大值");
+
+        double zeroGamma = SeirModel.clampGamma(0.0);
+        assertEquals(0.01, zeroGamma, 0.0001, "零gamma应钳制到最小值");
+
+        double negSigma = SeirModel.clampSigma(-1.0);
+        assertEquals(0.01, negSigma, 0.0001, "负数sigma应钳制到最小值");
+
+        String clampDesc = SeirModel.clampAndDescribe(-0.5, 0.001, 10.0, "beta");
+        assertTrue(clampDesc.contains("钳制"), "钳制描述应包含'钳制'字样");
+
+        String keepDesc = SeirModel.clampAndDescribe(0.35, 0.001, 10.0, "beta");
+        assertTrue(keepDesc.contains("保持原值"), "正常描述应包含'保持原值'");
+
+        int clampedInitial = SeirModel.clampInitialInfected(-5, 100);
+        assertEquals(0, clampedInitial, "负数初始感染应钳制为0");
+
+        SeirModel model = createDefaultModel();
+        SeirResult resultNegInitial = model.simulate(100, -5, 30, null, new ArrayList<>(), null);
+        assertNotNull(resultNegInitial, "负数初始感染结果不应为空");
+        assertTrue(resultNegInitial.getDayPoints().isEmpty(), "负数初始感染应返回空结果");
+
+        int tooLargeInitial = SeirModel.clampInitialInfected(200, 100);
+        assertEquals(100, tooLargeInitial, "超过人口的初始感染应钳制为人口数");
+
+        assertDoesNotThrow(() -> {
+            SeirModel extremeModel = new SeirModel(-100, -10, 0);
+            SeirResult extremeResult = extremeModel.simulate(50, 2, 20, null, new ArrayList<>(), null);
+            assertNotNull(extremeResult, "极端参数模拟结果不应为空");
+        }, "极端参数不应导致崩溃");
+    }
 }

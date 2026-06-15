@@ -13,14 +13,69 @@ import java.util.List;
 @Slf4j
 public class SeirModel {
 
+    private static final double MIN_BETA = 0.001;
+    private static final double MAX_BETA = 10.0;
+    private static final double MIN_SIGMA = 0.01;
+    private static final double MAX_SIGMA = 10.0;
+    private static final double MIN_GAMMA = 0.01;
+    private static final double MAX_GAMMA = 10.0;
+
     private final double betaBase;
     private final double sigma;
     private final double gamma;
 
     public SeirModel(double betaBase, double sigma, double gamma) {
-        this.betaBase = betaBase;
-        this.sigma = sigma;
-        this.gamma = gamma;
+        this.betaBase = clampBeta(betaBase);
+        this.sigma = clampSigma(sigma);
+        this.gamma = clampGamma(gamma);
+    }
+
+    public static double clampBeta(double beta) {
+        double clamped = Math.max(MIN_BETA, Math.min(MAX_BETA, beta));
+        if (Math.abs(clamped - beta) > 0.0001) {
+            log.info("beta被钳制: {} → {}", beta, clamped);
+        }
+        return clamped;
+    }
+
+    public static double clampSigma(double sigma) {
+        double clamped = Math.max(MIN_SIGMA, Math.min(MAX_SIGMA, sigma));
+        if (Math.abs(clamped - sigma) > 0.0001) {
+            log.info("sigma被钳制: {} → {}", sigma, clamped);
+        }
+        return clamped;
+    }
+
+    public static double clampGamma(double gamma) {
+        double clamped = Math.max(MIN_GAMMA, Math.min(MAX_GAMMA, gamma));
+        if (Math.abs(clamped - gamma) > 0.0001) {
+            log.info("gamma被钳制: {} → {}", gamma, clamped);
+        }
+        return clamped;
+    }
+
+    public static int clampInitialInfected(int initialInfected, int population) {
+        if (initialInfected < 0) {
+            log.info("initialInfected被钳制: {} → 0", initialInfected);
+            return 0;
+        }
+        if (initialInfected > population) {
+            log.info("initialInfected被钳制: {} → {}", initialInfected, population);
+            return population;
+        }
+        return initialInfected;
+    }
+
+    public static String clampAndDescribe(double value, double min, double max, String name) {
+        double clamped = Math.max(min, Math.min(max, value));
+        if (Math.abs(clamped - value) > 0.0001) {
+            return String.format("%s被钳制: %.4f → %.4f", name, value, clamped);
+        }
+        return String.format("%s保持原值: %.4f", name, value);
+    }
+
+    public double getR0() {
+        return betaBase / gamma;
     }
 
     @Data
@@ -46,19 +101,24 @@ public class SeirModel {
     public SeirResult simulate(int population, int initialInfected, int days,
                                SimulationParams params, List<ContactEdge> contactEdges,
                                QuarantineConfig quarantineConfig) {
-        if (population <= 0 || initialInfected <= 0 || days <= 0) {
-            log.warn("SEIR模拟参数无效: population={}, initialInfected={}, days={}",
-                    population, initialInfected, days);
+        if (population <= 0 || days <= 0) {
+            log.warn("SEIR模拟参数无效: population={}, days={}", population, days);
             return SeirResult.empty();
         }
 
-        if (initialInfected > population) {
-            initialInfected = population;
+        initialInfected = clampInitialInfected(initialInfected, population);
+        if (initialInfected <= 0) {
+            log.warn("初始感染人数钳制后为0，返回空结果");
+            return SeirResult.empty();
         }
 
         double beta = params != null && params.getBeta() > 0 ? params.getBeta() : this.betaBase;
         double sigma = params != null && params.getSigma() > 0 ? params.getSigma() : this.sigma;
         double gamma = params != null && params.getGamma() > 0 ? params.getGamma() : this.gamma;
+
+        beta = clampBeta(beta);
+        sigma = clampSigma(sigma);
+        gamma = clampGamma(gamma);
 
         beta = adjustBetaByContactNetwork(beta, contactEdges);
 
@@ -213,7 +273,8 @@ public class SeirModel {
 
     private double adjustBetaByContactNetwork(double betaBase, List<ContactEdge> contactEdges) {
         if (contactEdges == null || contactEdges.isEmpty()) {
-            return betaBase;
+            log.info("接触网络为空，传播速率β设为0");
+            return 0.0;
         }
 
         double totalFrequency = 0;
@@ -225,8 +286,9 @@ public class SeirModel {
             }
         }
 
-        if (count == 0) {
-            return betaBase;
+        if (count == 0 || totalFrequency <= 0.0001) {
+            log.info("接触网络平均频率为0，传播速率β设为0");
+            return 0.0;
         }
 
         double avgFrequency = totalFrequency / count;
