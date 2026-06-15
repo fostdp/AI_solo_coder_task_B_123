@@ -1,0 +1,67 @@
+server:
+  port: 8086
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: barracks-intervention-tree
+
+  datasource:
+    url: jdbc:postgresql://postgres:5432/barracks_monitor
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.spatial.dialect.postgis.PostgisPG10Dialect
+        format_sql: true
+        jdbc:
+          batch_size: 50
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+intervention:
+  high-risk-threshold: ${HIGH_RISK_THRESHOLD:0.5}
+  default-duration-days: ${DEFAULT_DURATION_DAYS:14}
+  retrain-cron: ${RETRAIN_CRON:"0 0 3 * * ?"}
+  tree-max-depth: ${TREE_MAX_DEPTH:10}
+  tree-min-samples-split: ${TREE_MIN_SAMPLES_SPLIT:5}
+  cross-validation-folds: ${CV_FOLDS:5}
+  min-history-samples-for-training: ${MIN_TRAIN_SAMPLES:50}
+  enable-builtin-rules-fallback: true
+
+logging:
+  level:
+    com.juyan.barracks: INFO
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoint:
+    prometheus:
+      enabled: true
