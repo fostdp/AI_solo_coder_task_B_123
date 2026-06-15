@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/barracks_monitor}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+algorithm:
+  model-path: ${ML_MODEL_PATH:/var/models/}
+
+scheduling:
+  nutrition-prediction:
+    cron: ${NUTRITION_CRON:0 0 */2 * * ?}
+
+logging:
+  file:
+    path: ${LOG_PATH:/var/log/barracks/}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoint:
+    prometheus:
+      enabled: true
