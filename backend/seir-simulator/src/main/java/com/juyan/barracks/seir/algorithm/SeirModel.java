@@ -78,6 +78,118 @@ public class SeirModel {
         return betaBase / gamma;
     }
 
+    public static final String LOCATION_BARRACKS = "BARRACKS";
+    public static final String LOCATION_CANTEEN_A = "CANTEEN_A";
+    public static final String LOCATION_CANTEEN_B = "CANTEEN_B";
+    public static final String LOCATION_TRAINING = "TRAINING";
+    public static final String LOCATION_HOSPITAL = "HOSPITAL";
+
+    public enum TimeOfDay {
+        MORNING(0.3, LOCATION_BARRACKS),
+        BREAKFAST(1.5, LOCATION_CANTEEN_A),
+        MORNING_TRAINING(1.8, LOCATION_TRAINING),
+        LUNCH(2.0, LOCATION_CANTEEN_B),
+        AFTERNOON_TRAINING(1.5, LOCATION_TRAINING),
+        DINNER(1.2, LOCATION_CANTEEN_A),
+        EVENING(0.8, LOCATION_BARRACKS),
+        NIGHT(0.1, LOCATION_BARRACKS);
+
+        private final double contactIntensity;
+        private final String defaultLocation;
+
+        TimeOfDay(double contactIntensity, String defaultLocation) {
+            this.contactIntensity = contactIntensity;
+            this.defaultLocation = defaultLocation;
+        }
+
+        public double getContactIntensity() {
+            return contactIntensity;
+        }
+
+        public String getDefaultLocation() {
+            return defaultLocation;
+        }
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class DynamicContactEdge extends ContactEdge {
+        private String morningLocation;
+        private String afternoonLocation;
+        private String eveningLocation;
+
+        public double getFrequencyByTime(TimeOfDay timeOfDay) {
+            double baseFreq = getContactFrequencyPerDay() != null ? getContactFrequencyPerDay() : 0.0;
+            return baseFreq * timeOfDay.getContactIntensity();
+        }
+    }
+
+    private static TimeOfDay getTimeOfDayBySimulationDay(int day) {
+        int cycleIndex = day % TimeOfDay.values().length;
+        return TimeOfDay.values()[cycleIndex];
+    }
+
+    private double calculateDynamicDailyBeta(int day, double baseBeta,
+                                             List<ContactEdge> contactEdges) {
+        TimeOfDay timeOfDay = getTimeOfDayBySimulationDay(day);
+        double timeIntensity = timeOfDay.getContactIntensity();
+
+        double avgDailyFrequency = 0.0;
+        int count = 0;
+
+        if (contactEdges != null) {
+            for (ContactEdge edge : contactEdges) {
+                if (edge == null) continue;
+                Double freq = edge.getContactFrequencyPerDay();
+                if (freq != null) {
+                    if (edge instanceof DynamicContactEdge dynamicEdge) {
+                        avgDailyFrequency += dynamicEdge.getFrequencyByTime(timeOfDay);
+                    } else {
+                        avgDailyFrequency += freq * timeIntensity;
+                    }
+                    count++;
+                }
+            }
+        }
+
+        if (count == 0) {
+            return 0.0;
+        }
+
+        avgDailyFrequency /= count;
+
+        double locationFactor = 1.0;
+        String location = timeOfDay.getDefaultLocation();
+        switch (location) {
+            case LOCATION_CANTEEN_A:
+            case LOCATION_CANTEEN_B:
+                locationFactor = 1.8;
+                break;
+            case LOCATION_TRAINING:
+                locationFactor = 1.5;
+                break;
+            case LOCATION_BARRACKS:
+                locationFactor = 0.8;
+                break;
+            case LOCATION_HOSPITAL:
+                locationFactor = 0.3;
+                break;
+        }
+
+        double calibrationBase = 5.0;
+        double calibrationFactor = (avgDailyFrequency / calibrationBase) * locationFactor;
+
+        double dynamicBeta = baseBeta * calibrationFactor;
+        dynamicBeta = clampBeta(dynamicBeta);
+
+        log.debug("Day {}: Time={}, Loc={}, avgFreq={:.2f}, locFactor={:.1f}, calFactor={:.3f}, dynamicBeta={:.4f}",
+                day, timeOfDay.name(), location, avgDailyFrequency, locationFactor, calibrationFactor, dynamicBeta);
+
+        return dynamicBeta;
+    }
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -120,7 +232,7 @@ public class SeirModel {
         sigma = clampSigma(sigma);
         gamma = clampGamma(gamma);
 
-        beta = adjustBetaByContactNetwork(beta, contactEdges);
+        double staticNetworkBeta = adjustBetaByContactNetwork(beta, contactEdges);
 
         double r0 = beta / gamma;
 
@@ -147,19 +259,29 @@ public class SeirModel {
         int totalInfected = I;
         int lastInfectedDay = 0;
 
-        double currentBeta = beta;
         double qRate = quarantineConfig != null ? quarantineConfig.getQuarantineRate() : 0.0;
         if (qRate <= 0) {
             qRate = 0.5;
         }
 
+        int lastQuarantineDay = -1;
+
         for (int day = 1; day <= days; day++) {
+            double dynamicBeta = calculateDynamicDailyBeta(day, beta, contactEdges);
+
+            if (dynamicBeta <= 0.0001 && staticNetworkBeta > 0) {
+                dynamicBeta = staticNetworkBeta * 0.5;
+            }
+
+            double currentBeta = dynamicBeta;
+
             if (quarantineConfig != null && quarantineConfig.getQuarantineStartDay() > 0
                     && day >= quarantineConfig.getQuarantineStartDay()) {
                 double effect = quarantineConfig.getIsolationEffectiveness();
                 if (effect < 0) effect = 0;
                 if (effect > 1) effect = 1;
-                currentBeta = beta * (1 - effect);
+                currentBeta = dynamicBeta * (1 - effect);
+                lastQuarantineDay = day;
             }
 
             double Sd = S;
@@ -257,11 +379,12 @@ public class SeirModel {
 
         int durationDays = lastInfectedDay;
 
-        log.info("SEIR模拟完成: 人口={}, 初始感染={}, 模拟天数={}, R0={}, 峰值日={}, 峰值感染={}, 总感染={}",
+        log.info("SEIR动态网络模拟完成: 人口={}, 初始感染={}, 模拟天数={}, R0={}, 峰值日={}, 峰值感染={}, 总感染={}, 隔离起始日={}",
                 population, initialInfected, days, String.format("%.4f", r0),
-                peakDay, peakInfected, totalInfected);
+                peakDay, peakInfected, totalInfected,
+                quarantineConfig != null ? quarantineConfig.getQuarantineStartDay() : "无");
 
-        return SeirResult.builder()
+        SeirResult result = SeirResult.builder()
                 .dayPoints(dayPoints)
                 .peakDay(peakDay)
                 .peakInfected(peakInfected)
@@ -269,6 +392,22 @@ public class SeirModel {
                 .durationDays(durationDays)
                 .r0(r0)
                 .build();
+
+        if (result.getDynamicBetaDaily() == null) {
+            result.setDynamicBetaDaily(new ArrayList<>());
+        }
+        for (int day = 1; day <= days; day++) {
+            double dailyBeta = calculateDynamicDailyBeta(day, beta, contactEdges);
+            if (quarantineConfig != null && quarantineConfig.getQuarantineStartDay() > 0
+                    && day >= quarantineConfig.getQuarantineStartDay()) {
+                double effect = quarantineConfig.getIsolationEffectiveness();
+                effect = Math.max(0, Math.min(1, effect));
+                dailyBeta = dailyBeta * (1 - effect);
+            }
+            result.getDynamicBetaDaily().add(dailyBeta);
+        }
+
+        return result;
     }
 
     private double adjustBetaByContactNetwork(double betaBase, List<ContactEdge> contactEdges) {

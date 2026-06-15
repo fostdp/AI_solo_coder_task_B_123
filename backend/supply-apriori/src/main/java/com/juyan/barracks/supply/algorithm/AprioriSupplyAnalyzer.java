@@ -10,6 +10,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class AprioriSupplyAnalyzer {
 
+    public static final double DEFAULT_MIN_LIFT = 1.5;
+
     public List<AssociationRuleResult.ItemSet> findFrequentItemSets(List<Set<String>> transactions, double minSupport) {
         if (transactions == null) {
             return new ArrayList<>();
@@ -162,18 +164,27 @@ public class AprioriSupplyAnalyzer {
             List<AssociationRuleResult.ItemSet> frequentItemSets,
             List<Set<String>> transactions,
             double minConfidence) {
+        return generateAssociationRules(frequentItemSets, transactions, minConfidence, DEFAULT_MIN_LIFT);
+    }
 
-        List<AssociationRuleResult> rules = new ArrayList<>();
+    public List<AssociationRuleResult> generateAssociationRules(
+            List<AssociationRuleResult.ItemSet> frequentItemSets,
+            List<Set<String>> transactions,
+            double minConfidence,
+            double minLift) {
+
+        List<AssociationRuleResult> allRules = new ArrayList<>();
         if (frequentItemSets == null || transactions == null) {
-            return rules;
+            return allRules;
         }
         int totalTransactions = transactions.size();
 
         if (totalTransactions == 0) {
-            return rules;
+            return allRules;
         }
 
         minConfidence = clampConfidence(minConfidence);
+        minLift = Math.max(0.001, minLift);
 
         Map<Set<String>, AssociationRuleResult.ItemSet> itemSetMap = new HashMap<>();
         for (AssociationRuleResult.ItemSet itemSet : frequentItemSets) {
@@ -187,10 +198,20 @@ public class AprioriSupplyAnalyzer {
 
             List<String> items = new ArrayList<>(frequentItemSet.items);
             generateRulesFromItemSet(frequentItemSet, items, transactions,
-                    minConfidence, totalTransactions, itemSetMap, rules);
+                    minConfidence, totalTransactions, itemSetMap, allRules);
         }
 
-        rules.sort((r1, r2) -> {
+        List<AssociationRuleResult> filteredRules = new ArrayList<>();
+        int spuriousCount = 0;
+        for (AssociationRuleResult rule : allRules) {
+            if (rule.getLift() != null && rule.getLift().doubleValue() >= minLift) {
+                filteredRules.add(rule);
+            } else {
+                spuriousCount++;
+            }
+        }
+
+        filteredRules.sort((r1, r2) -> {
             int cmp = r2.getLift().compareTo(r1.getLift());
             if (cmp != 0) return cmp;
             cmp = r2.getConfidence().compareTo(r1.getConfidence());
@@ -198,8 +219,14 @@ public class AprioriSupplyAnalyzer {
             return r2.getSupport().compareTo(r1.getSupport());
         });
 
-        log.debug("生成关联规则数量: {}", rules.size());
-        return rules;
+        double spuriousReduction = allRules.isEmpty() ? 0.0 :
+                (double) spuriousCount / allRules.size();
+
+        log.debug("规则过滤完成: 原始规则={}, Lift<{}剔除={}, 保留={}, 虚假规则减少率={:.1f}%",
+                allRules.size(), minLift, spuriousCount, filteredRules.size(),
+                spuriousReduction * 100);
+
+        return filteredRules;
     }
 
     private void generateRulesFromItemSet(

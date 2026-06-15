@@ -277,4 +277,55 @@ class MipMealPlannerTest {
         assertNotNull(greedyResult.getTotalCost(), "贪心算法总成本不应为空");
         assertNotNull(greedyResult.getObjectiveValue(), "贪心算法objectiveValue不应为空");
     }
+
+    @Test
+    void testSlackVariablesAlwaysFeasible() {
+        List<FoodItem> limitedFoods = new ArrayList<>();
+        limitedFoods.add(buildFood(1L, "白菜", 100.0, 1.5, 0.1, 0.2, 28.0, 4.0));
+        limitedFoods.add(buildFood(2L, "小米", 350.0, 12.0, 3.0, 0.0, 1000.0, 8.0));
+        limitedFoods.add(buildFood(3L, "红薯", 86.0, 1.6, 0.1, 30.0, 600.0, 2.5));
+
+        MipMealPlanner extremePlanner = new MipMealPlanner(
+                limitedFoods, 50, 500, 200, 500, 2500, 3000);
+
+        MipMealPlanner.MealPlanResult extremeResult = null;
+        try {
+            extremeResult = extremePlanner.solve();
+        } catch (Exception e) {
+            fail("松弛变量+回退机制应确保永不抛异常: " + e.getMessage());
+        }
+
+        assertNotNull(extremeResult, "极端目标下结果不应为空");
+        assertNotNull(extremeResult.getSolverStatus(), "求解状态不应为空");
+
+        assertTrue(extremeResult.isFeasible() ||
+                        "RELAXED_FEASIBLE".equals(extremeResult.getSolverStatus()) ||
+                        "GREEDY_FALLBACK".equals(extremeResult.getSolverStatus()) ||
+                        "FALLBACK_DEFAULT".equals(extremeResult.getSolverStatus()),
+                "松弛变量或回退机制应始终给出可行解，状态: " + extremeResult.getSolverStatus());
+
+        assertNotNull(extremeResult.getDailyNutritionMap(), "每日营养映射不应为空");
+        assertFalse(extremeResult.getDailyNutritionMap().isEmpty(), "每日营养映射不应为空");
+        assertNotNull(extremeResult.getTotalCost(), "总成本不应为空");
+        assertFalse(extremeResult.getTotalCost().compareTo(BigDecimal.ZERO) < 0,
+                "总成本应非负");
+
+        MipMealPlanner.MealPlanResult normalResult = new MipMealPlanner(
+                limitedFoods, 50, 60, 40, 80, 2000, 3500).solve();
+
+        assertNotNull(normalResult, "正常目标下结果不应为空");
+        assertTrue(normalResult.isFeasible(), "正常目标下松弛变量应允许可行解");
+        assertTrue("OPTIMAL".equals(normalResult.getSolverStatus()) ||
+                        "FEASIBLE".equals(normalResult.getSolverStatus()),
+                "正常目标下应为OPTIMAL或FEASIBLE，实际: " + normalResult.getSolverStatus());
+
+        for (Map.Entry<Integer, MipMealPlanner.DailyNutrition> entry :
+                normalResult.getDailyNutritionMap().entrySet()) {
+            MipMealPlanner.DailyNutrition nut = entry.getValue();
+            assertTrue(nut.getProtein().doubleValue() >= 50.0,
+                    "每日蛋白质(" + nut.getProtein() + "g)应接近目标(松弛后)");
+            assertTrue(nut.getCalorie().doubleValue() >= 1900.0,
+                    "每日热量(" + nut.getCalorie() + "kcal)应接近目标(松弛后)");
+        }
+    }
 }

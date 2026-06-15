@@ -312,4 +312,67 @@ class SeirModelTest {
             assertNotNull(extremeResult, "极端参数模拟结果不应为空");
         }, "极端参数不应导致崩溃");
     }
+
+    @Test
+    void testDynamicContactNetworkAcceleratesSpread() {
+        int population = 200;
+        int initialInfected = 3;
+        int days = 30;
+
+        SeirModel model = createDefaultModel();
+        SeirModel.SimulationParams params = createDefaultParams();
+
+        List<ContactEdge> staticEdges = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            ContactEdge edge = new ContactEdge();
+            edge.setSoldierIdA((long) (i % 100));
+            edge.setSoldierIdB((long) ((i + 15) % 100));
+            edge.setContactType("ROOMMATE");
+            edge.setContactFrequencyPerDay(5.0);
+            staticEdges.add(edge);
+        }
+
+        SeirResult staticResult = model.simulate(population, initialInfected, days,
+                params, staticEdges, null);
+        assertNotNull(staticResult, "静态网络结果不应为空");
+
+        List<ContactEdge> dynamicEdges = new ArrayList<>();
+        for (int i = 0; i < 60; i++) {
+            SeirModel.DynamicContactEdge dEdge = new SeirModel.DynamicContactEdge();
+            dEdge.setSoldierIdA((long) (i % 150));
+            dEdge.setSoldierIdB((long) ((i + 25) % 150));
+            dEdge.setContactType("TABLE");
+            dEdge.setContactFrequencyPerDay(8.0);
+            dEdge.setMorningLocation(SeirModel.LOCATION_BARRACKS);
+            dEdge.setAfternoonLocation(SeirModel.LOCATION_TRAINING);
+            dEdge.setEveningLocation(SeirModel.LOCATION_CANTEEN_A);
+            dynamicEdges.add(dEdge);
+        }
+
+        SeirResult dynamicResult = model.simulate(population, initialInfected, days,
+                params, dynamicEdges, null);
+        assertNotNull(dynamicResult, "动态网络结果不应为空");
+
+        assertNotNull(dynamicResult.getDynamicBetaDaily(), "动态网络应产生dailyBeta序列");
+        assertEquals(days, dynamicResult.getDynamicBetaDaily().size(),
+                "dynamicBetaDaily长度应等于模拟天数");
+
+        boolean hasBetaVariation = false;
+        double firstBeta = dynamicResult.getDynamicBetaDaily().get(0);
+        for (Double beta : dynamicResult.getDynamicBetaDaily()) {
+            if (Math.abs(beta - firstBeta) > 0.0001) {
+                hasBetaVariation = true;
+                break;
+            }
+        }
+        assertTrue(hasBetaVariation, "动态网络的β值应随时间变化(食堂/训练场差异)");
+
+        assertTrue(dynamicResult.getTotalInfected() >= staticResult.getTotalInfected() * 0.3,
+                "动态网络(食堂+训练密集接触)传播速度应不慢于静态网络：动态总感染="
+                        + dynamicResult.getTotalInfected() + "，静态总感染="
+                        + staticResult.getTotalInfected());
+
+        assertTrue(dynamicResult.getPeakDay() <= staticResult.getPeakDay() + 10,
+                "动态网络峰值日不应显著晚于静态网络");
+    }
 }

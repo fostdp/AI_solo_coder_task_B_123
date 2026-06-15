@@ -489,4 +489,77 @@ class AprioriSupplyAnalyzerTest {
         assertEquals(0, analyzer.getRuleCount(null),
                 "null规则列表的计数应为0");
     }
+
+    @Test
+    void testLiftFilterReducesSpuriousRules() {
+        AprioriSupplyAnalyzer analyzer = new AprioriSupplyAnalyzer();
+        List<Set<String>> sparseTransactions = new ArrayList<>();
+
+        for (int i = 0; i < 30; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("短缺_肉类");
+            if (i < 15) t.add("天气_晴");
+            if (i < 8) t.add("天气_阴");
+            if (i < 5) t.add("天气_大风");
+            if (i < 3) t.add("天气_雾霾");
+            sparseTransactions.add(t);
+        }
+
+        for (int i = 0; i < 70; i++) {
+            Set<String> t = new HashSet<>();
+            t.add("短缺_蔬菜类");
+            if (i < 10) t.add("天气_晴");
+            if (i < 40) t.add("天气_暴雨");
+            if (i < 35) t.add("路线_南线");
+            if (i < 2) t.add("天气_雾霾");
+            sparseTransactions.add(t);
+        }
+
+        assertEquals(100, sparseTransactions.size(), "稀疏事务数应为100");
+
+        List<AssociationRuleResult.ItemSet> freqItemSets =
+                analyzer.findFrequentItemSets(sparseTransactions, 0.05);
+        assertNotNull(freqItemSets, "频繁项集结果不应为空");
+
+        List<AssociationRuleResult> noFilterRules =
+                analyzer.generateAssociationRules(freqItemSets, sparseTransactions, 0.3, 0.001);
+        List<AssociationRuleResult> filteredRules =
+                analyzer.generateAssociationRules(freqItemSets, sparseTransactions, 0.3, 1.5);
+
+        int spuriousCount = 0;
+        for (AssociationRuleResult rule : noFilterRules) {
+            if (rule.getLift() != null && rule.getLift().doubleValue() < 1.5) {
+                spuriousCount++;
+            }
+        }
+
+        assertNotNull(filteredRules, "Lift过滤后的规则不应为空");
+        for (AssociationRuleResult rule : filteredRules) {
+            assertNotNull(rule.getLift(), "规则Lift不应为空");
+            assertTrue(rule.getLift().doubleValue() >= 1.5 - 0.0001,
+                    "过滤后规则Lift应≥1.5，实际: " + rule.getLift() +
+                            "，规则: " + rule.getAntecedent() + " → " + rule.getConsequent());
+        }
+
+        if (spuriousCount > 0 && !noFilterRules.isEmpty()) {
+            double reductionRate = (double) spuriousCount / noFilterRules.size();
+            assertTrue(reductionRate >= 0.5,
+                    "Lift过滤应剔除至少50%的虚假规则，实际剔除率: "
+                            + String.format("%.1f%%", reductionRate * 100)
+                            + "，总规则数: " + noFilterRules.size()
+                            + "，虚假规则数: " + spuriousCount
+                            + "，保留规则数: " + filteredRules.size());
+        }
+
+        List<AssociationRuleResult> defaultFilteredRules =
+                analyzer.generateAssociationRules(freqItemSets, sparseTransactions, 0.3);
+        assertEquals(filteredRules.size(), defaultFilteredRules.size(),
+                "默认minLift应为1.5，与显式指定1.5的规则数相同");
+
+        for (AssociationRuleResult rule : defaultFilteredRules) {
+            assertNotNull(rule.getDescription(), "规则描述不应为空");
+            assertNotNull(rule.getSupport(), "规则支持度不应为空");
+            assertNotNull(rule.getConfidence(), "规则置信度不应为空");
+        }
+    }
 }

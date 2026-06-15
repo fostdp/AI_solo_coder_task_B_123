@@ -24,6 +24,12 @@ public class MipMealPlanner {
     private static final int MAX_RELAX_LEVEL = 3;
     private static final double RELAX_FACTOR = 0.8;
 
+    private static final double SLACK_PENALTY_PROTEIN = 50.0;
+    private static final double SLACK_PENALTY_FAT = 80.0;
+    private static final double SLACK_PENALTY_VITAMIN_C = 200.0;
+    private static final double SLACK_PENALTY_CALORIE = 0.1;
+    private static final double MAX_SLACK_ALLOWED = 500.0;
+
     private final List<FoodItem> foodItems;
     private final int soldierCount;
     private final double targetProtein;
@@ -69,8 +75,8 @@ public class MipMealPlanner {
             addSelectionConstraints(model, quantityVars, selectionVars);
             addMealVarietyConstraints(model, selectionVars);
             addDailyVarietyConstraints(model, selectionVars);
-            addNutritionConstraints(model, quantityVars);
-            setObjectiveFunction(model, quantityVars);
+            Map<String, Variable> slackVars = addNutritionConstraints(model, quantityVars);
+            setObjectiveFunction(model, quantityVars, slackVars);
 
             model.options.time_abort = BigDecimal.valueOf(timeLimitSeconds);
 
@@ -202,19 +208,30 @@ public class MipMealPlanner {
         }
     }
 
-    private void addNutritionConstraints(ExpressionsBasedModel model,
-                                         Map<String, Variable> quantityVars) {
+    private Map<String, Variable> addNutritionConstraints(ExpressionsBasedModel model,
+                                                          Map<String, Variable> quantityVars) {
+        Map<String, Variable> slackVars = new HashMap<>();
+
         for (int day = 1; day <= DAYS; day++) {
+            String[] nutrientNames = {"protein", "fat", "vitamin_c", "calorie_min"};
+            double[] targets = {targetProtein, targetFat, targetVitaminC, calorieMin};
+            double[] penalties = {SLACK_PENALTY_PROTEIN, SLACK_PENALTY_FAT,
+                    SLACK_PENALTY_VITAMIN_C, SLACK_PENALTY_CALORIE};
+
             ExpressionsBasedModel.Expression proteinExpr =
-                    model.addExpression("protein_d" + day).lower(BigDecimal.valueOf(targetProtein));
+                    model.addExpression("protein_d" + day);
             ExpressionsBasedModel.Expression fatExpr =
-                    model.addExpression("fat_d" + day).lower(BigDecimal.valueOf(targetFat));
+                    model.addExpression("fat_d" + day);
             ExpressionsBasedModel.Expression vitaminCExpr =
-                    model.addExpression("vitamin_c_d" + day).lower(BigDecimal.valueOf(targetVitaminC));
+                    model.addExpression("vitamin_c_d" + day);
             ExpressionsBasedModel.Expression calorieMinExpr =
-                    model.addExpression("calorie_min_d" + day).lower(BigDecimal.valueOf(calorieMin));
+                    model.addExpression("calorie_min_d" + day);
             ExpressionsBasedModel.Expression calorieMaxExpr =
-                    model.addExpression("calorie_max_d" + day).upper(BigDecimal.valueOf(calorieMax));
+                    model.addExpression("calorie_max_d" + day)
+                            .upper(BigDecimal.valueOf(calorieMax + MAX_SLACK_ALLOWED));
+
+            ExpressionsBasedModel.Expression[] nutrientExprs = {proteinExpr, fatExpr,
+                    vitaminCExpr, calorieMinExpr};
 
             for (String mealType : MEAL_TYPES) {
                 for (FoodItem food : foodItems) {
@@ -233,13 +250,38 @@ public class MipMealPlanner {
                     calorieMaxExpr.set(qVar, caloriePerGram);
                 }
             }
+
+            for (int n = 0; n < nutrientNames.length; n++) {
+                String nutrient = nutrientNames[n];
+                double target = targets[n];
+                double penalty = penalties[n];
+
+                Variable slackMinus = model.addVariable("slack_minus_" + nutrient + "_d" + day)
+                        .lower(BigDecimal.ZERO)
+                        .upper(BigDecimal.valueOf(MAX_SLACK_ALLOWED));
+                Variable slackPlus = model.addVariable("slack_plus_" + nutrient + "_d" + day)
+                        .lower(BigDecimal.ZERO)
+                        .upper(BigDecimal.valueOf(MAX_SLACK_ALLOWED));
+
+                slackVars.put("slack_minus_" + nutrient + "_d" + day, slackMinus);
+                slackVars.put("slack_plus_" + nutrient + "_d" + day, slackPlus);
+
+                ExpressionsBasedModel.Expression expr = nutrientExprs[n];
+                expr.set(slackMinus, BigDecimal.valueOf(-1));
+                expr.set(slackPlus, BigDecimal.valueOf(1));
+                expr.lower(BigDecimal.valueOf(target));
+                expr.upper(BigDecimal.valueOf(target + MAX_SLACK_ALLOWED));
+            }
         }
+
+        return slackVars;
     }
 
     private void setObjectiveFunction(ExpressionsBasedModel model,
-                                      Map<String, Variable> quantityVars) {
+                                      Map<String, Variable> quantityVars,
+                                      Map<String, Variable> slackVars) {
         ExpressionsBasedModel.Expression costExpr =
-                model.addExpression("total_cost");
+                model.addExpression("total_cost_with_slack");
 
         for (int day = 1; day <= DAYS; day++) {
             for (String mealType : MEAL_TYPES) {
@@ -248,6 +290,23 @@ public class MipMealPlanner {
                     Variable qVar = quantityVars.get(qKey);
                     BigDecimal costPerGram = safeDivide(food.getCostPerKg(), 1000);
                     costExpr.set(qVar, costPerGram);
+                }
+            }
+
+            double[] penalties = {SLACK_PENALTY_PROTEIN, SLACK_PENALTY_FAT,
+                    SLACK_PENALTY_VITAMIN_C, SLACK_PENALTY_CALORIE};
+            String[] nutrientNames = {"protein", "fat", "vitamin_c", "calorie_min"};
+
+            for (int n = 0; n < nutrientNames.length; n++) {
+                String nutrient = nutrientNames[n];
+                double penalty = penalties[n];
+                Variable sm = slackVars.get("slack_minus_" + nutrient + "_d" + day);
+                Variable sp = slackVars.get("slack_plus_" + nutrient + "_d" + day);
+                if (sm != null) {
+                    costExpr.set(sm, BigDecimal.valueOf(penalty));
+                }
+                if (sp != null) {
+                    costExpr.set(sp, BigDecimal.valueOf(penalty * 0.5));
                 }
             }
         }

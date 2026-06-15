@@ -20,6 +20,8 @@ public class SeirResult {
     private int totalInfected;
     private int durationDays;
     private double r0;
+    @Builder.Default
+    private List<Double> dynamicBetaDaily = new ArrayList<>();
 
     @Data
     @Builder
