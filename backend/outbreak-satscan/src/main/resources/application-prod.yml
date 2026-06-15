@@ -1,0 +1,32 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/barracks_monitor}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+algorithm:
+  epidemic:
+    max-cluster-size-ratio: ${SATSCAN_MAX_RATIO:0.5}
+    significance-level: ${SATSCAN_ALPHA:0.05}
+    monte-carlo-replications: ${SATSCAN_PERMUTATIONS:99}
+
+scheduling:
+  epidemic-scan:
+    cron: ${EPIDEMIC_CRON:0 0 */2 * * ?}
+
+logging:
+  file:
+    path: ${LOG_PATH:/var/log/barracks/}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  endpoint:
+    prometheus:
+      enabled: true
